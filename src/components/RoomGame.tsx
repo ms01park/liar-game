@@ -107,6 +107,113 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
   const supabaseAvailable = Boolean(getBrowserSupabase());
   const sensors = useSensors(useSensor(PointerSensor));
 
+  const applyOptimisticAction = useCallback((action: string, payload?: Record<string, unknown>) => {
+    if (!session) return;
+    setSnapshot((currentSnapshot) => {
+      if (action === "settings") {
+        return {
+          ...currentSnapshot,
+          room: {
+            ...currentSnapshot.room,
+            mode: (payload?.mode as GameMode) ?? currentSnapshot.room.mode,
+            maxPlayers: typeof payload?.maxPlayers === "number" ? payload.maxPlayers : currentSnapshot.room.maxPlayers,
+            liarCount: typeof payload?.liarCount === "number" ? payload.liarCount : currentSnapshot.room.liarCount,
+            spyCount: typeof payload?.spyCount === "number" ? payload.spyCount : currentSnapshot.room.spyCount,
+            revealSeconds: typeof payload?.revealSeconds === "number" ? payload.revealSeconds : currentSnapshot.room.revealSeconds,
+            talkSeconds: typeof payload?.talkSeconds === "number" ? payload.talkSeconds : currentSnapshot.room.talkSeconds,
+          },
+        };
+      }
+
+      if (action === "order" && Array.isArray(payload?.order)) {
+        const order = payload.order.map(String);
+        return {
+          ...currentSnapshot,
+          players: currentSnapshot.players.map((player) => {
+            const sortOrder = order.indexOf(player.id);
+            return sortOrder >= 0 ? { ...player, sortOrder } : player;
+          }),
+        };
+      }
+
+      if (action === "start_category_vote") {
+        return {
+          ...currentSnapshot,
+          room: {
+            ...currentSnapshot.room,
+            phase: "category_vote",
+            phaseStartedAt: new Date().toISOString(),
+            selectedCategory: undefined,
+          },
+          players: currentSnapshot.players.map((player) => ({
+            ...player,
+            categoryVote: undefined,
+            voteTargetId: undefined,
+            voteConfirmed: false,
+            voteConfirmedAt: undefined,
+            role: undefined,
+            visibleRole: undefined,
+            word: undefined,
+            speakingDone: false,
+            usedTimeAdjust: false,
+          })),
+        };
+      }
+
+      if (action === "time_adjust") {
+        const deltaSeconds = typeof payload?.deltaSeconds === "number" ? payload.deltaSeconds : 0;
+        return {
+          ...currentSnapshot,
+          room: {
+            ...currentSnapshot.room,
+            talkSeconds: Math.max(15, currentSnapshot.room.talkSeconds + deltaSeconds),
+          },
+          players: currentSnapshot.players.map((player) =>
+            player.id === session.playerId ? { ...player, usedTimeAdjust: true } : player,
+          ),
+        };
+      }
+
+      if (action === "message") {
+        const body = typeof payload?.body === "string" ? payload.body.trim() : "";
+        if (!body) return currentSnapshot;
+        return {
+          ...currentSnapshot,
+          messages: [
+            ...currentSnapshot.messages,
+            {
+              id: `optimistic-${Date.now()}`,
+              roomId: currentSnapshot.room.id,
+              playerId: session.playerId,
+              phase: currentSnapshot.room.phase,
+              body,
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+
+      const playerPatch =
+        action === "ready"
+          ? { ready: Boolean(payload?.ready) }
+          : action === "category_vote"
+            ? { categoryVote: typeof payload?.category === "string" ? payload.category : undefined }
+            : action === "vote"
+              ? { voteTargetId: typeof payload?.targetId === "string" ? payload.targetId : undefined }
+              : action === "confirm_vote"
+                ? { voteConfirmed: true, voteConfirmedAt: new Date().toISOString() }
+                : null;
+
+      if (!playerPatch) return currentSnapshot;
+      return {
+        ...currentSnapshot,
+        players: currentSnapshot.players.map((player) =>
+          player.id === session.playerId ? { ...player, ...playerPatch } : player,
+        ),
+      };
+    });
+  }, [session]);
+
   const refresh = useCallback(async () => {
     if (localMock) {
       const local = getLocalMockRoomByCode(code);
@@ -135,6 +242,8 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
         return;
       }
 
+      const previousSnapshot = snapshot;
+      applyOptimisticAction(action, payload);
       const response = await fetch(`/api/rooms/${code}/action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -142,13 +251,18 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
       });
       const data = await response.json();
       if (!response.ok) {
+        setSnapshot(previousSnapshot);
         setStatus(data.error ?? "요청에 실패했습니다.");
         return;
       }
       setStatus("");
-      await refresh();
+      setSnapshot((currentSnapshot) => ({
+        room: data.room ?? currentSnapshot.room,
+        players: data.players ?? currentSnapshot.players,
+        messages: data.messages ?? currentSnapshot.messages,
+      }));
     },
-    [code, localMock, refresh, session],
+    [applyOptimisticAction, code, localMock, session, snapshot],
   );
 
   useEffect(() => {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { assignRoles, decideCategoryVote, decideWinner, getActivePlayers, pickTwoWords } from "@/lib/gameRules";
-import { mapPlayer, mapRoom } from "@/lib/format";
+import { mapMessage, mapPlayer, mapRoom } from "@/lib/format";
 import { isSupabaseServerConfigured, missingSupabaseMessage } from "@/lib/supabase/isConfigured";
 import { getServerSupabase } from "@/lib/supabaseServer";
 import type { GameMode, Player, RoomPhase } from "@/types/game";
@@ -64,13 +64,26 @@ async function markStalePlayers(
   );
 }
 
-async function loadRoomBundle(supabase: ReturnType<typeof getServerSupabase>, code: string) {
+async function loadRoomBundle(
+  supabase: ReturnType<typeof getServerSupabase>,
+  code: string,
+  options: { includeMessages?: boolean } = {},
+) {
   const roomResult = await supabase.from("rooms").select("*").eq("code", code.toUpperCase()).single();
   if (roomResult.error) throw new Error("방을 찾을 수 없습니다.");
   const playersResult = await supabase.from("players").select("*").eq("room_id", roomResult.data.id).order("sort_order");
   if (playersResult.error) throw playersResult.error;
+  const messagesResult = options.includeMessages
+    ? await supabase.from("messages").select("*").eq("room_id", roomResult.data.id).order("created_at")
+    : null;
+  if (messagesResult?.error) throw messagesResult.error;
   const players = await markStalePlayers(supabase, playersResult.data);
-  return { roomRow: roomResult.data, room: mapRoom(roomResult.data), players: players.map(mapPlayer) };
+  return {
+    roomRow: roomResult.data,
+    room: mapRoom(roomResult.data),
+    players: players.map(mapPlayer),
+    messages: messagesResult?.data.map(mapMessage) ?? [],
+  };
 }
 
 function activePlayers(players: Player[]) {
@@ -124,10 +137,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
 
     if (body.action === "heartbeat") {
       await supabase.from("players").update({ last_seen_at: now(), connection_status: "connected" }).eq("id", actor.id);
+      return NextResponse.json({ ok: true });
     }
 
     if (body.action === "leave") {
       await supabase.from("players").update({ ready: false, last_seen_at: now(), connection_status: "left" }).eq("id", actor.id);
+      return NextResponse.json({ ok: true });
     }
 
     if (body.action === "remove_player") {
@@ -299,8 +314,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
         .eq("id", room.id);
     }
 
-    const snapshot = await loadRoomBundle(supabase, code);
-    return NextResponse.json({ room: snapshot.room, players: snapshot.players });
+    const snapshot = await loadRoomBundle(supabase, code, { includeMessages: true });
+    return NextResponse.json({ room: snapshot.room, players: snapshot.players, messages: snapshot.messages });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unknown error" }, { status: 500 });
   }
