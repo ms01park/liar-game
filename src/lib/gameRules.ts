@@ -1,5 +1,27 @@
 import type { GameMode, Player } from "../types/game";
 
+const VOTE_TARGETS_PREFIX = "vote_targets:";
+
+export function encodeVoteTargetIds(targetIds: string[]) {
+  return `${VOTE_TARGETS_PREFIX}${JSON.stringify([...new Set(targetIds.filter(Boolean))])}`;
+}
+
+export function parseVoteTargetIds(player: Pick<Player, "categoryVote" | "voteTargetId">) {
+  if (player.categoryVote?.startsWith(VOTE_TARGETS_PREFIX)) {
+    try {
+      const parsed = JSON.parse(player.categoryVote.slice(VOTE_TARGETS_PREFIX.length));
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && Boolean(id)) : [];
+    } catch {
+      return player.voteTargetId ? [player.voteTargetId] : [];
+    }
+  }
+  return player.voteTargetId ? [player.voteTargetId] : [];
+}
+
+export function requiredVoteCount(liarCount: number, playerCount: number) {
+  return Math.max(1, Math.min(Math.floor(liarCount), Math.max(1, playerCount - 1)));
+}
+
 export function shuffle<T>(items: T[]): T[] {
   const copy = [...items];
   for (let index = copy.length - 1; index > 0; index -= 1) {

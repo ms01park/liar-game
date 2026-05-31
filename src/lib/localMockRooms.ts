@@ -1,6 +1,14 @@
 "use client";
 
-import { assignRoles, decideCategoryVote, getActivePlayers, pickTwoWords } from "@/lib/gameRules";
+import {
+  assignRoles,
+  decideCategoryVote,
+  encodeVoteTargetIds,
+  getActivePlayers,
+  parseVoteTargetIds,
+  pickTwoWords,
+  requiredVoteCount,
+} from "@/lib/gameRules";
 import type { ChatMessage, ClientSession, GameMode, Player, RoomPhase, RoomSnapshot, RoomState } from "@/types/game";
 import { wordPacks } from "@/data/wordPacks";
 
@@ -43,6 +51,7 @@ function writeRooms(rooms: Record<string, StoredRoom>) {
 
 function normalizeRoom(stored: StoredRoom) {
   const nowMs = Date.now();
+  stored.room = { ...stored.room, speakingSeconds: stored.room.speakingSeconds ?? 30 };
   stored.players = stored.players.map((player) => {
     if (player.connectionStatus === "left") return player;
     const lastSeen = player.lastSeenAt ? new Date(player.lastSeenAt).getTime() : 0;
@@ -126,6 +135,7 @@ export function createLocalMockRoom(params: { roomName: string; password: string
     liarCount: 1,
     spyCount: 0,
     revealSeconds: 10,
+    speakingSeconds: 30,
     talkSeconds: 180,
     phaseStartedAt: timestamp,
   };
@@ -195,6 +205,15 @@ function stringValue(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
+function positiveInt(value: unknown, fallback: number) {
+  return Math.max(1, Math.floor(numberValue(value, fallback)));
+}
+
+function targetIdsValue(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is string => typeof id === "string" && Boolean(id));
+}
+
 function updatePlayers(stored: StoredRoom, updater: (player: Player) => Player) {
   stored.players = stored.players.map(updater);
 }
@@ -207,7 +226,7 @@ function validateStart(stored: StoredRoom) {
   if (players.some((player) => !player.ready)) {
     throw new Error("아직 준비하지 않은 플레이어가 있습니다. 모든 플레이어가 준비 완료해야 시작할 수 있습니다.");
   }
-  const specialCount = stored.room.liarCount + (stored.room.mode === "spy" ? stored.room.spyCount : 0);
+  const specialCount = Math.max(1, stored.room.liarCount) + (stored.room.mode === "spy" ? Math.max(1, stored.room.spyCount) : 0);
   if (specialCount >= players.length) throw new Error("라이어와 스파이 수는 현재 참가자 수보다 작아야 합니다.");
 }
 
@@ -236,8 +255,8 @@ function assignCategoryAndWords(stored: StoredRoom) {
   const assigned = assignRoles({
     players: activePlayers(stored.players),
     mode: stored.room.mode,
-    liarCount: stored.room.liarCount,
-    spyCount: stored.room.mode === "spy" ? stored.room.spyCount : 0,
+    liarCount: Math.max(1, stored.room.liarCount),
+    spyCount: stored.room.mode === "spy" ? Math.max(1, stored.room.spyCount) : 0,
     citizenWord,
     liarWord,
   });
@@ -297,14 +316,16 @@ export function localMockRoomAction(params: {
   }
 
   if (params.action === "settings") {
+    const mode = stringValue(params.payload?.mode, stored.room.mode) as GameMode;
     stored.room = {
       ...stored.room,
-      mode: stringValue(params.payload?.mode, stored.room.mode) as GameMode,
+      mode,
       maxPlayers: numberValue(params.payload?.maxPlayers, stored.room.maxPlayers),
-      liarCount: numberValue(params.payload?.liarCount, stored.room.liarCount),
-      spyCount: numberValue(params.payload?.spyCount, stored.room.spyCount),
-      revealSeconds: numberValue(params.payload?.revealSeconds, stored.room.revealSeconds),
-      talkSeconds: numberValue(params.payload?.talkSeconds, stored.room.talkSeconds),
+      liarCount: positiveInt(params.payload?.liarCount, stored.room.liarCount),
+      spyCount: mode === "spy" ? positiveInt(params.payload?.spyCount, Math.max(1, stored.room.spyCount)) : 0,
+      revealSeconds: positiveInt(params.payload?.revealSeconds, stored.room.revealSeconds),
+      speakingSeconds: positiveInt(params.payload?.speakingSeconds, stored.room.speakingSeconds),
+      talkSeconds: positiveInt(params.payload?.talkSeconds, stored.room.talkSeconds),
     };
   }
 
@@ -382,12 +403,22 @@ export function localMockRoomAction(params: {
 
   if (params.action === "vote") {
     if (actor.voteConfirmed) throw new Error("이미 투표를 확정했습니다.");
-    const targetId = stringValue(params.payload?.targetId);
-    updatePlayers(stored, (player) => (player.id === actor.id ? { ...player, voteTargetId: targetId } : player));
+    const targetIds = targetIdsValue(params.payload?.targetIds);
+    const nextTargetIds = targetIds.length ? targetIds : [stringValue(params.payload?.targetId)].filter(Boolean);
+    const activeIds = new Set(connectedPlayers(stored.players).map((player) => player.id));
+    const maxVotes = requiredVoteCount(stored.room.liarCount, activeIds.size);
+    const selectedIds = [...new Set(nextTargetIds)].filter((id) => activeIds.has(id)).slice(0, maxVotes);
+    updatePlayers(stored, (player) =>
+      player.id === actor.id
+        ? { ...player, voteTargetId: selectedIds[0], categoryVote: encodeVoteTargetIds(selectedIds) }
+        : player,
+    );
   }
 
   if (params.action === "confirm_vote") {
-    if (!actor.voteTargetId) throw new Error("먼저 투표할 플레이어를 선택하세요.");
+    const latestActor = stored.players.find((player) => player.id === actor.id) ?? actor;
+    const maxVotes = requiredVoteCount(stored.room.liarCount, connectedPlayers(stored.players).length);
+    if (parseVoteTargetIds(latestActor).length < maxVotes) throw new Error("먼저 투표할 플레이어를 선택하세요.");
     updatePlayers(stored, (player) =>
       player.id === actor.id ? { ...player, voteConfirmed: true, voteConfirmedAt: now() } : player,
     );

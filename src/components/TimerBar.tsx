@@ -27,9 +27,9 @@ export function TimerBar({ startedAt, seconds, onDone }: Props) {
     if (remaining > 0 && doneKeyRef.current === doneKey) {
       doneKeyRef.current = null;
     }
-    if (remaining === 0 && doneKeyRef.current !== doneKey) {
+    if (remaining === 0 && onDone && doneKeyRef.current !== doneKey) {
       doneKeyRef.current = doneKey;
-      onDone?.();
+      onDone();
     }
   }, [onDone, remaining, seconds, startedAt]);
 

@@ -49,6 +49,7 @@ export type RoomState = {
   liarCount: number;
   spyCount: number;
   revealSeconds: number;
+  speakingSeconds: number;
   talkSeconds: number;
   selectedCategory?: string;
   citizenWord?: string;

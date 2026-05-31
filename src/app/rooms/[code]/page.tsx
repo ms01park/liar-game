@@ -17,6 +17,7 @@ function placeholderSnapshot(code: string): RoomSnapshot {
       liarCount: 1,
       spyCount: 0,
       revealSeconds: 10,
+      speakingSeconds: 30,
       talkSeconds: 180,
       phaseStartedAt: new Date().toISOString(),
     },

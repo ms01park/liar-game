@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -15,7 +15,7 @@ import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { CategoryGrid } from "@/components/CategoryGrid";
 import { TimerBar } from "@/components/TimerBar";
-import { decideWinner, splitPlayersForVoteRows } from "@/lib/gameRules";
+import { decideWinner, parseVoteTargetIds, requiredVoteCount, splitPlayersForVoteRows } from "@/lib/gameRules";
 import {
   getLocalMockRoomByCode,
   getLocalMockSession,
@@ -76,12 +76,34 @@ function getInviteBaseUrl() {
   return baseUrl.replace(/\/$/, "");
 }
 
+const phaseRanks = {
+  lobby: 0,
+  category_vote: 1,
+  category_result: 2,
+  keyword_reveal: 3,
+  speaking: 4,
+  discussion: 5,
+  result: 6,
+};
+
+function isStalePhaseSnapshot(current: RoomSnapshot, next: RoomSnapshot) {
+  if (current.room.phase === "lobby" || current.room.phase === "result") return false;
+  if (phaseRanks[next.room.phase] >= phaseRanks[current.room.phase]) return false;
+  const currentStarted = current.room.phaseStartedAt ? new Date(current.room.phaseStartedAt).getTime() : 0;
+  const nextStarted = next.room.phaseStartedAt ? new Date(next.room.phaseStartedAt).getTime() : 0;
+  return nextStarted <= currentStarted;
+}
+
+function mergeSnapshot(current: RoomSnapshot, next: RoomSnapshot) {
+  return isStalePhaseSnapshot(current, next) ? current : next;
+}
+
 function SortablePlayer({
   act,
   host,
   player,
 }: {
-  act?: (action: string, payload?: Record<string, unknown>) => Promise<void>;
+  act?: (action: string, payload?: Record<string, unknown>) => Promise<boolean>;
   host: boolean;
   player: Player;
 }) {
@@ -139,6 +161,7 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
             liarCount: typeof payload?.liarCount === "number" ? payload.liarCount : currentSnapshot.room.liarCount,
             spyCount: typeof payload?.spyCount === "number" ? payload.spyCount : currentSnapshot.room.spyCount,
             revealSeconds: typeof payload?.revealSeconds === "number" ? payload.revealSeconds : currentSnapshot.room.revealSeconds,
+            speakingSeconds: typeof payload?.speakingSeconds === "number" ? payload.speakingSeconds : currentSnapshot.room.speakingSeconds,
             talkSeconds: typeof payload?.talkSeconds === "number" ? payload.talkSeconds : currentSnapshot.room.talkSeconds,
           },
         };
@@ -249,7 +272,10 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
           : action === "category_vote"
             ? { categoryVote: typeof payload?.category === "string" ? payload.category : undefined }
             : action === "vote"
-              ? { voteTargetId: typeof payload?.targetId === "string" ? payload.targetId : undefined }
+              ? {
+                  voteTargetId: Array.isArray(payload?.targetIds) ? payload.targetIds.map(String)[0] : typeof payload?.targetId === "string" ? payload.targetId : undefined,
+                  categoryVote: Array.isArray(payload?.targetIds) ? `vote_targets:${JSON.stringify(payload.targetIds.map(String))}` : undefined,
+                }
               : action === "confirm_vote"
                 ? { voteConfirmed: true, voteConfirmedAt: new Date().toISOString() }
                 : null;
@@ -267,29 +293,33 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
   const refresh = useCallback(async () => {
     if (localMock) {
       const local = getLocalMockRoomByCode(code);
-      if (local) setSnapshot(local);
+      if (local) setSnapshot((currentSnapshot) => mergeSnapshot(currentSnapshot, local));
       return;
     }
     const response = await fetch(`/api/rooms/${code}`, { cache: "no-store" });
-    if (response.ok) setSnapshot(await response.json());
+    if (response.ok) {
+      const next = (await response.json()) as RoomSnapshot;
+      setSnapshot((currentSnapshot) => mergeSnapshot(currentSnapshot, next));
+    }
   }, [code, localMock]);
 
   const act = useCallback(
     async (action: string, payload?: Record<string, unknown>) => {
       if (!session) {
         setStatus("이 기기의 참가 세션이 없습니다. 참가 링크로 다시 입장하세요.");
-        return;
+        return false;
       }
 
       if (localMock) {
         try {
           const next = localMockRoomAction({ code, session, action, payload });
-          if (next) setSnapshot(next);
+          if (next) setSnapshot((currentSnapshot) => mergeSnapshot(currentSnapshot, next));
           setStatus("");
+          return true;
         } catch (caught) {
           setStatus(caught instanceof Error ? caught.message : "요청에 실패했습니다.");
+          return false;
         }
-        return;
       }
 
       const previousSnapshot = snapshot;
@@ -303,14 +333,17 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
       if (!response.ok) {
         setSnapshot(previousSnapshot);
         setStatus(data.error ?? "요청에 실패했습니다.");
-        return;
+        return false;
       }
       setStatus("");
-      setSnapshot((currentSnapshot) => ({
-        room: data.room ?? currentSnapshot.room,
-        players: data.players ?? currentSnapshot.players,
-        messages: data.messages ?? currentSnapshot.messages,
-      }));
+      setSnapshot((currentSnapshot) =>
+        mergeSnapshot(currentSnapshot, {
+          room: data.room ?? currentSnapshot.room,
+          players: data.players ?? currentSnapshot.players,
+          messages: data.messages ?? currentSnapshot.messages,
+        }),
+      );
+      return true;
     },
     [applyOptimisticAction, code, localMock, session, snapshot],
   );
@@ -339,18 +372,8 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
       void heartbeat();
       void refresh();
     }, 5000);
-    const leave = () => {
-      const body = JSON.stringify({ action: "leave", ...session });
-      if (localMock) {
-        localMockRoomAction({ code, session, action: "leave" });
-        return;
-      }
-      navigator.sendBeacon?.(`/api/rooms/${code}/action`, new Blob([body], { type: "application/json" }));
-    };
-    window.addEventListener("beforeunload", leave);
     return () => {
       window.clearInterval(id);
-      window.removeEventListener("beforeunload", leave);
     };
   }, [code, localMock, refresh, session]);
 
@@ -395,12 +418,19 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
   const currentSpeaker = orderedPlayers.find((player) => player.id === snapshot.room.currentSpeakerPlayerId);
   const currentSpeakerIndex = currentSpeaker ? orderedPlayers.findIndex((player) => player.id === currentSpeaker.id) : 0;
   const isCurrentSpeaker = Boolean(me && me.id === currentSpeaker?.id);
+  const speakingMessages = useMemo(
+    () => snapshot.messages.filter((item) => item.phase === "speaking"),
+    [snapshot.messages],
+  );
+  const currentSpeakerSentMessage = Boolean(
+    currentSpeaker && speakingMessages.some((item) => item.playerId === currentSpeaker.id),
+  );
   const revealText = getKeywordRevealText(me);
   const winner =
     snapshot.room.phase === "result"
       ? decideWinner({
           players: snapshot.players,
-          voteTargetIds: snapshot.players.map((player) => player.voteTargetId).filter(Boolean) as string[],
+          voteTargetIds: snapshot.players.flatMap((player) => parseVoteTargetIds(player)),
         })
       : null;
 
@@ -412,10 +442,10 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
     void act("order", { order: next.map((player) => player.id) });
   }
 
-  function submitMessage() {
+  async function submitMessage() {
     if (!message.trim()) return;
-    void act("message", { body: message });
-    setMessage("");
+    const sent = await act("message", { body: message });
+    if (sent) setMessage("");
   }
 
   const discussionMessages = useMemo(
@@ -542,11 +572,12 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
               currentSpeakerIndex={currentSpeakerIndex}
               me={me}
               playerCount={orderedPlayers.length}
+              seconds={snapshot.room.speakingSeconds}
               startedAt={snapshot.room.phaseStartedAt}
             />
             <Chat
               disabled={!isCurrentSpeaker}
-              messages={snapshot.messages.filter((item) => item.phase === "speaking")}
+              messages={speakingMessages}
               message={message}
               players={snapshot.players}
               placeholder={isCurrentSpeaker ? "설명을 입력하세요" : "현재 설명자만 입력할 수 있습니다"}
@@ -554,10 +585,14 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
               submit={submitMessage}
             />
             <div className="grid gap-2 sm:grid-cols-2">
-              <button className="btn btn-primary" disabled={!isCurrentSpeaker} onClick={() => act("finish_speaker")} type="button">
+              <button className="btn btn-primary" disabled={!isCurrentSpeaker || !currentSpeakerSentMessage} onClick={() => act("finish_speaker")} type="button">
                 {isCurrentSpeaker ? "설명 완료" : "현재 설명자만 완료 가능"}
               </button>
-              <TimerBar seconds={30} startedAt={snapshot.room.phaseStartedAt} onDone={() => isHost && act("finish_speaker")} />
+              <TimerBar
+                seconds={snapshot.room.speakingSeconds}
+                startedAt={snapshot.room.phaseStartedAt}
+                onDone={isHost && currentSpeakerSentMessage ? () => act("finish_speaker") : undefined}
+              />
             </div>
           </div>
           <PlayerList compact players={orderedPlayers} />
@@ -577,7 +612,7 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
               </p>
             </div>
             <Chat messages={discussionMessages} message={message} players={snapshot.players} setMessage={setMessage} submit={submitMessage} />
-            <DiscussionControls act={act} me={me} players={orderedPlayers} />
+            <DiscussionControls act={act} me={me} players={orderedPlayers} requiredVotes={requiredVoteCount(snapshot.room.liarCount, orderedPlayers.length)} />
           </div>
           <PlayerList compact players={orderedPlayers} />
         </section>
@@ -606,7 +641,7 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
 }
 
 function Lobby(props: {
-  act: (action: string, payload?: Record<string, unknown>) => Promise<void>;
+  act: (action: string, payload?: Record<string, unknown>) => Promise<boolean>;
   isHost: boolean;
   inviteUrl: string;
   room: RoomSnapshot["room"];
@@ -617,7 +652,12 @@ function Lobby(props: {
   const [spyCount, setSpyCount] = useState(room.spyCount);
   const [maxPlayers, setMaxPlayers] = useState(room.maxPlayers);
   const [revealSeconds, setRevealSeconds] = useState(room.revealSeconds);
+  const [speakingSeconds, setSpeakingSeconds] = useState(room.speakingSeconds);
   const [talkSeconds, setTalkSeconds] = useState(room.talkSeconds);
+
+  useEffect(() => {
+    if (mode === "spy" && spyCount < 1) setSpyCount(1);
+  }, [mode, spyCount]);
 
   return (
     <section className="grid gap-4">
@@ -675,10 +715,14 @@ function Lobby(props: {
             <input className="input" max={60} min={5} step={5} onChange={(event) => setRevealSeconds(Number(event.target.value))} type="number" value={revealSeconds} />
           </label>
           <label className="label">
+            설명 초
+            <input className="input" min={5} step={5} onChange={(event) => setSpeakingSeconds(Number(event.target.value))} type="number" value={speakingSeconds} />
+          </label>
+          <label className="label">
             토론 초
             <input className="input" min={30} step={15} onChange={(event) => setTalkSeconds(Number(event.target.value))} type="number" value={talkSeconds} />
           </label>
-          <button className="btn btn-secondary sm:col-span-3" onClick={() => act("settings", { mode, maxPlayers, liarCount, spyCount, revealSeconds, talkSeconds })} type="button">
+          <button className="btn btn-secondary sm:col-span-3" onClick={() => act("settings", { mode, maxPlayers, liarCount, spyCount: mode === "spy" ? Math.max(1, spyCount) : 0, revealSeconds, speakingSeconds, talkSeconds })} type="button">
             설정 적용
           </button>
         </div>
@@ -698,15 +742,16 @@ function SpeakingHeader(props: {
   currentSpeakerIndex: number;
   me?: Player;
   playerCount: number;
+  seconds: number;
   startedAt?: string;
 }) {
-  const { category, currentSpeaker, currentSpeakerIndex, me, playerCount, startedAt } = props;
+  const { category, currentSpeaker, currentSpeakerIndex, me, playerCount, seconds, startedAt } = props;
   return (
     <div className="grid gap-3 rounded-lg border border-[var(--line)] bg-[#11131a] p-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs font-black text-[var(--gold)]">카테고리 / 내 키워드 / 남은 시간</p>
-          <p className="text-xl font-black">{category} / {getPlayerDisplayWord(me)} / 30초</p>
+          <p className="text-xl font-black">{category} / {getPlayerDisplayWord(me)} / {seconds}초</p>
         </div>
         <div className="text-right">
           <p className="text-sm font-bold text-[var(--muted)]">현재 설명</p>
@@ -721,14 +766,31 @@ function SpeakingHeader(props: {
 }
 
 function DiscussionControls(props: {
-  act: (action: string, payload?: Record<string, unknown>) => Promise<void>;
+  act: (action: string, payload?: Record<string, unknown>) => Promise<boolean>;
   me?: Player;
   players: Player[];
+  requiredVotes: number;
 }) {
-  const { act, me, players } = props;
-  const canConfirm = Boolean(me?.voteTargetId && !me?.voteConfirmed);
+  const { act, me, players, requiredVotes } = props;
+  const selectedTargetIds = me ? parseVoteTargetIds(me) : [];
+  const canConfirm = Boolean(selectedTargetIds.length >= requiredVotes && !me?.voteConfirmed);
+
+  function toggleVoteTarget(targetId: string) {
+    if (!me || me.voteConfirmed) return;
+    const selected = new Set(selectedTargetIds);
+    if (selected.has(targetId)) {
+      selected.delete(targetId);
+    } else if (selected.size < requiredVotes) {
+      selected.add(targetId);
+    }
+    void act("vote", { targetIds: [...selected] });
+  }
+
   return (
     <div className="grid gap-3">
+      <p className="text-sm font-bold text-[var(--muted)]">
+        {requiredVotes}명까지 투표하세요. 현재 {Math.min(selectedTargetIds.length, requiredVotes)} / {requiredVotes}
+      </p>
       <div className="grid gap-2">
         {splitPlayersForVoteRows(players).map((row, index) => (
           <div className="grid gap-2 sm:grid-flow-col sm:auto-cols-fr" key={index}>
@@ -737,10 +799,10 @@ function DiscussionControls(props: {
                 className="btn btn-secondary"
                 disabled={me?.voteConfirmed}
                 key={player.id}
-                onClick={() => act("vote", { targetId: player.id })}
+                onClick={() => toggleVoteTarget(player.id)}
                 type="button"
               >
-                {player.nickname}{me?.voteTargetId === player.id ? " 선택" : ""}
+                {player.nickname}{selectedTargetIds.includes(player.id) ? " 선택" : ""}
               </button>
             ))}
           </div>
@@ -753,7 +815,7 @@ function DiscussionControls(props: {
           {me?.voteConfirmed ? "투표 확정 완료" : "투표 확정"}
         </button>
       </div>
-      {!me?.voteTargetId ? <p className="text-sm font-bold text-[var(--muted)]">먼저 투표할 플레이어를 선택하세요.</p> : null}
+      {selectedTargetIds.length < requiredVotes ? <p className="text-sm font-bold text-[var(--muted)]">먼저 투표할 플레이어를 선택하세요.</p> : null}
     </div>
   );
 }
@@ -767,7 +829,7 @@ function PlayerList({
   sensors,
   sortable,
 }: {
-  act?: (action: string, payload?: Record<string, unknown>) => Promise<void>;
+  act?: (action: string, payload?: Record<string, unknown>) => Promise<boolean>;
   compact?: boolean;
   isHost?: boolean;
   onDragEnd?: (event: DragEndEvent) => void;
@@ -828,12 +890,20 @@ function Chat(props: {
   placeholder?: string;
   players: Player[];
   setMessage: (value: string) => void;
-  submit: () => void;
+  submit: () => Promise<void>;
 }) {
   const { disabled, messages, message, placeholder = "메시지 입력", players, setMessage, submit } = props;
+  const [isComposing, setIsComposing] = useState(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [messages.length]);
+
   return (
     <section className="grid min-h-0 grid-rows-[1fr_auto] gap-3">
-      <div className="min-h-[280px] overflow-auto rounded-lg border border-[var(--line)] bg-[#11131a] p-3">
+      <div className="h-[min(44vh,420px)] min-h-[220px] overflow-y-auto rounded-lg border border-[var(--line)] bg-[#11131a] p-3" ref={scrollRef}>
         {messages.length ? (
           messages.map((item) => (
             <p className="mb-2 text-sm" key={item.id}>
@@ -849,11 +919,19 @@ function Chat(props: {
         className="flex gap-2"
         onSubmit={(event) => {
           event.preventDefault();
-          submit();
+          if (!isComposing) void submit();
         }}
       >
-        <input className="input" disabled={disabled} onChange={(event) => setMessage(event.target.value)} placeholder={placeholder} value={message} />
-        <button className="btn btn-secondary" disabled={disabled} type="submit">전송</button>
+        <input
+          className="input"
+          disabled={disabled}
+          onChange={(event) => setMessage(event.target.value)}
+          onCompositionEnd={() => setIsComposing(false)}
+          onCompositionStart={() => setIsComposing(true)}
+          placeholder={placeholder}
+          value={message}
+        />
+        <button className="btn btn-secondary" disabled={disabled || !message.trim()} type="submit">전송</button>
       </form>
     </section>
   );

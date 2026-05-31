@@ -16,6 +16,12 @@ function asBoolean(value: unknown, fallback = false) {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function speakingSecondsFromStatus(value: unknown) {
+  const status = asString(value);
+  const match = status.match(/(?:^|;)speaking_seconds=(\d+)(?:;|$)/);
+  return match ? Math.max(5, Number(match[1])) : 30;
+}
+
 export function mapRoom(row: RoomRow): RoomState {
   return {
     id: asString(row.id),
@@ -28,6 +34,7 @@ export function mapRoom(row: RoomRow): RoomState {
     liarCount: asNumber(row.liar_count, 1),
     spyCount: asNumber(row.spy_count, 0),
     revealSeconds: asNumber(row.reveal_seconds, 10),
+    speakingSeconds: speakingSecondsFromStatus(row.status),
     talkSeconds: asNumber(row.talk_seconds, 180),
     selectedCategory: asString(row.selected_category) || undefined,
     citizenWord: asString(row.citizen_word) || undefined,

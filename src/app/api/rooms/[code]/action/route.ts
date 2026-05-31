@@ -1,5 +1,14 @@
 import { NextResponse } from "next/server";
-import { assignRoles, decideCategoryVote, decideWinner, getActivePlayers, pickTwoWords } from "@/lib/gameRules";
+import {
+  assignRoles,
+  decideCategoryVote,
+  decideWinner,
+  encodeVoteTargetIds,
+  getActivePlayers,
+  parseVoteTargetIds,
+  pickTwoWords,
+  requiredVoteCount,
+} from "@/lib/gameRules";
 import { mapMessage, mapPlayer, mapRoom } from "@/lib/format";
 import { isSupabaseServerConfigured, missingSupabaseMessage } from "@/lib/supabase/isConfigured";
 import { getServerSupabase } from "@/lib/supabaseServer";
@@ -43,6 +52,19 @@ function numberValue(value: unknown, fallback: number) {
 
 function stringValue(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
+}
+
+function positiveInt(value: unknown, fallback: number) {
+  return Math.max(1, Math.floor(numberValue(value, fallback)));
+}
+
+function settingsStatus(speakingSeconds: number) {
+  return `waiting;speaking_seconds=${Math.max(5, Math.floor(speakingSeconds))}`;
+}
+
+function targetIdsValue(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is string => typeof id === "string" && Boolean(id));
 }
 
 async function markStalePlayers(
@@ -96,6 +118,10 @@ function orderedConnectedPlayers(players: Player[]) {
     .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
+function connectedPlayers(players: Player[]) {
+  return activePlayers(players).filter((player) => player.connectionStatus === "connected");
+}
+
 function nextConnectedSpeaker(players: Player[], currentSpeakerId?: string) {
   const connected = orderedConnectedPlayers(players);
   if (!connected.length) return undefined;
@@ -113,7 +139,9 @@ function validateStart(room: Awaited<ReturnType<typeof loadRoomBundle>>["room"],
   if (active.some((player) => !player.ready)) {
     throw new Error("아직 준비하지 않은 플레이어가 있습니다. 모든 플레이어가 준비 완료해야 시작할 수 있습니다.");
   }
-  const specialCount = room.liarCount + (room.mode === "spy" ? room.spyCount : 0);
+  const liarCount = Math.max(1, room.liarCount);
+  const spyCount = room.mode === "spy" ? Math.max(1, room.spyCount) : 0;
+  const specialCount = liarCount + spyCount;
   if (specialCount >= active.length) throw new Error("라이어와 스파이 수는 현재 참가자 수보다 작아야 합니다.");
 }
 
@@ -170,15 +198,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
     }
 
     if (body.action === "settings") {
+      const mode = stringValue(body.payload?.mode, room.mode) as GameMode;
       await supabase
         .from("rooms")
         .update({
-          mode: stringValue(body.payload?.mode, room.mode) as GameMode,
+          mode,
           max_players: numberValue(body.payload?.maxPlayers, room.maxPlayers),
-          liar_count: numberValue(body.payload?.liarCount, room.liarCount),
-          spy_count: numberValue(body.payload?.spyCount, room.spyCount),
-          reveal_seconds: numberValue(body.payload?.revealSeconds, room.revealSeconds),
-          talk_seconds: numberValue(body.payload?.talkSeconds, room.talkSeconds),
+          liar_count: positiveInt(body.payload?.liarCount, room.liarCount),
+          spy_count: mode === "spy" ? positiveInt(body.payload?.spyCount, Math.max(1, room.spyCount)) : 0,
+          reveal_seconds: positiveInt(body.payload?.revealSeconds, room.revealSeconds),
+          talk_seconds: positiveInt(body.payload?.talkSeconds, room.talkSeconds),
+          status: settingsStatus(positiveInt(body.payload?.speakingSeconds, room.speakingSeconds)),
         })
         .eq("id", room.id);
     }
@@ -219,8 +249,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
       const assigned = assignRoles({
         players: voters,
         mode: room.mode,
-        liarCount: room.liarCount,
-        spyCount: room.mode === "spy" ? room.spyCount : 0,
+        liarCount: Math.max(1, room.liarCount),
+        spyCount: room.mode === "spy" ? Math.max(1, room.spyCount) : 0,
         citizenWord,
         liarWord,
       });
@@ -285,21 +315,32 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
 
     if (body.action === "vote") {
       if (actor.voteConfirmed) return NextResponse.json({ error: "이미 투표를 확정했습니다." }, { status: 400 });
-      await supabase.from("players").update({ vote_target_id: stringValue(body.payload?.targetId) }).eq("id", actor.id);
+      const targetIds = targetIdsValue(body.payload?.targetIds);
+      const nextTargetIds = targetIds.length ? targetIds : [stringValue(body.payload?.targetId)].filter(Boolean);
+      const activeIds = new Set(connectedPlayers(players).map((player) => player.id));
+      const maxVotes = requiredVoteCount(room.liarCount, activeIds.size);
+      const selectedIds = [...new Set(nextTargetIds)].filter((id) => activeIds.has(id)).slice(0, maxVotes);
+      await supabase
+        .from("players")
+        .update({ vote_target_id: selectedIds[0] ?? null, category_vote: encodeVoteTargetIds(selectedIds) })
+        .eq("id", actor.id);
     }
 
     if (body.action === "confirm_vote") {
-      if (!actor.voteTargetId) return NextResponse.json({ error: "먼저 투표할 플레이어를 선택하세요." }, { status: 400 });
+      const latestActorResult = await supabase.from("players").select("*").eq("id", actor.id).single();
+      const latestActor = latestActorResult.data ? mapPlayer(latestActorResult.data) : actor;
+      const maxVotes = requiredVoteCount(room.liarCount, connectedPlayers(players).length);
+      if (parseVoteTargetIds(latestActor).length < maxVotes) return NextResponse.json({ error: "먼저 투표할 플레이어를 선택하세요." }, { status: 400 });
       await supabase.from("players").update({ vote_confirmed: true, vote_confirmed_at: now() }).eq("id", actor.id);
       const latestPlayers = (await supabase.from("players").select("*").eq("room_id", room.id)).data?.map(mapPlayer) ?? players;
-      if (activePlayers(latestPlayers).every((player) => player.id === actor.id || player.voteConfirmed)) {
+      if (connectedPlayers(latestPlayers).every((player) => player.id === actor.id || player.voteConfirmed)) {
         await supabase.from("rooms").update({ phase: "result", phase_started_at: now() }).eq("id", room.id);
       }
     }
 
     if (body.action === "finish_discussion") {
       const latestPlayers = (await supabase.from("players").select("*").eq("room_id", room.id)).data?.map(mapPlayer) ?? players;
-      const voteTargetIds = latestPlayers.map((player: Player) => player.voteTargetId).filter(Boolean) as string[];
+      const voteTargetIds = latestPlayers.flatMap((player: Player) => parseVoteTargetIds(player));
       decideWinner({ players: latestPlayers, voteTargetIds });
       await supabase.from("rooms").update({ phase: "result", phase_started_at: now() }).eq("id", room.id);
     }
