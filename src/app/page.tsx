@@ -33,7 +33,7 @@ export default function Home() {
       <section className="grid gap-5">
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-black uppercase tracking-[0.22em] text-[var(--gold)]">
-            Liar Night
+            Liar Game
           </p>
           <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs font-black text-[var(--muted)]">
             {wordPacks.length} x 100

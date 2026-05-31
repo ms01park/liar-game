@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Liar Night",
+  title: "Liar Game",
   description: "1기기와 여러 기기를 모두 지원하는 라이어 게임",
 };
 
