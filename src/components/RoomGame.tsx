@@ -422,6 +422,17 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
               room={snapshot.room}
               sensors={sensors}
             />
+            <div className="mt-4 border-t border-[var(--line)] pt-4">
+              <h2 className="mb-3 text-lg font-black">대기실 채팅</h2>
+              <Chat
+                messages={snapshot.messages.filter((item) => item.phase === "lobby")}
+                message={message}
+                players={snapshot.players}
+                placeholder="대기실 메시지 입력"
+                setMessage={setMessage}
+                submit={submitMessage}
+              />
+            </div>
           </div>
           <PlayerList act={act} isHost={isHost} players={orderedPlayers} />
         </section>
