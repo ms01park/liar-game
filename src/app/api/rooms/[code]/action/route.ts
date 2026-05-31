@@ -90,8 +90,18 @@ function activePlayers(players: Player[]) {
   return getActivePlayers(players);
 }
 
-function orderedActivePlayers(players: Player[]) {
-  return activePlayers(players).sort((a, b) => a.sortOrder - b.sortOrder);
+function orderedConnectedPlayers(players: Player[]) {
+  return activePlayers(players)
+    .filter((player) => player.connectionStatus === "connected")
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+function nextConnectedSpeaker(players: Player[], currentSpeakerId?: string) {
+  const connected = orderedConnectedPlayers(players);
+  if (!connected.length) return undefined;
+  const current = players.find((player) => player.id === currentSpeakerId);
+  if (!current) return connected.find((player) => !player.speakingDone);
+  return connected.find((player) => player.sortOrder > current.sortOrder && !player.speakingDone);
 }
 
 function validateStart(room: Awaited<ReturnType<typeof loadRoomBundle>>["room"], players: Player[]) {
@@ -238,7 +248,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
 
     if (body.action === "finish_reveal") {
       const phase = stringValue(body.payload?.phase, "keyword_reveal") as RoomPhase;
-      const firstSpeakerId = phase === "speaking" ? orderedActivePlayers(players)[0]?.id : null;
+      const firstSpeakerId = phase === "speaking" ? orderedConnectedPlayers(players)[0]?.id : null;
       await supabase.from("rooms").update({ phase, phase_started_at: now(), current_speaker_player_id: firstSpeakerId }).eq("id", room.id);
     }
 
@@ -246,10 +256,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
       if (actor.id !== room.currentSpeakerPlayerId && !actor.isHost) {
         return NextResponse.json({ error: "현재 설명자만 완료할 수 있습니다." }, { status: 403 });
       }
-      const ordered = orderedActivePlayers(players);
-      const currentIndex = ordered.findIndex((player) => player.id === room.currentSpeakerPlayerId);
-      const nextSpeaker = ordered[currentIndex + 1];
-      await supabase.from("players").update({ speaking_done: true }).eq("id", room.currentSpeakerPlayerId);
+      const nextSpeaker = nextConnectedSpeaker(players, room.currentSpeakerPlayerId);
+      if (room.currentSpeakerPlayerId) {
+        await supabase.from("players").update({ speaking_done: true }).eq("id", room.currentSpeakerPlayerId);
+      }
       await supabase
         .from("rooms")
         .update({ phase: nextSpeaker ? "speaking" : "discussion", phase_started_at: now(), current_speaker_player_id: nextSpeaker?.id ?? null })
@@ -296,6 +306,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
 
     if (body.action === "restart") {
       await supabase.from("players").delete().eq("room_id", room.id).eq("connection_status", "left");
+      await supabase.from("messages").delete().eq("room_id", room.id);
       await supabase
         .from("players")
         .update({ ready: false, category_vote: null, vote_target_id: null, vote_confirmed: false, vote_confirmed_at: null, role: null, visible_role: null, word: null, speaking_done: false, used_time_adjust: false })

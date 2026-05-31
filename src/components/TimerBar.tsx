@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Props = {
   startedAt?: string;
@@ -10,6 +10,7 @@ type Props = {
 
 export function TimerBar({ startedAt, seconds, onDone }: Props) {
   const [now, setNow] = useState(() => Date.now());
+  const doneKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 500);
@@ -22,8 +23,15 @@ export function TimerBar({ startedAt, seconds, onDone }: Props) {
   }, [now, seconds, startedAt]);
 
   useEffect(() => {
-    if (remaining === 0) onDone?.();
-  }, [onDone, remaining]);
+    const doneKey = `${startedAt ?? "local"}:${seconds}`;
+    if (remaining > 0 && doneKeyRef.current === doneKey) {
+      doneKeyRef.current = null;
+    }
+    if (remaining === 0 && doneKeyRef.current !== doneKey) {
+      doneKeyRef.current = doneKey;
+      onDone?.();
+    }
+  }, [onDone, remaining, seconds, startedAt]);
 
   const ratio = seconds > 0 ? remaining / seconds : 0;
 

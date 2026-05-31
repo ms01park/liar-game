@@ -68,8 +68,10 @@ function connectedPlayers(players: Player[]) {
   return activePlayers(players).filter((player) => player.connectionStatus !== "disconnected");
 }
 
-function orderedActivePlayers(players: Player[]) {
-  return activePlayers(players).sort((a, b) => a.sortOrder - b.sortOrder);
+function orderedConnectedPlayers(players: Player[]) {
+  return activePlayers(players)
+    .filter((player) => player.connectionStatus === "connected")
+    .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
 function publicSnapshot(stored: StoredRoom): RoomSnapshot {
@@ -210,13 +212,14 @@ function validateStart(stored: StoredRoom) {
 }
 
 function firstSpeaker(stored: StoredRoom) {
-  return orderedActivePlayers(stored.players)[0];
+  return orderedConnectedPlayers(stored.players)[0];
 }
 
 function advanceSpeaker(stored: StoredRoom) {
-  const ordered = orderedActivePlayers(stored.players);
-  const currentIndex = ordered.findIndex((player) => player.id === stored.room.currentSpeakerPlayerId);
-  const next = ordered[currentIndex + 1];
+  const current = stored.players.find((player) => player.id === stored.room.currentSpeakerPlayerId);
+  const next = orderedConnectedPlayers(stored.players).find(
+    (player) => (!current || player.sortOrder > current.sortOrder) && !player.speakingDone,
+  );
   if (!next) {
     stored.room = { ...stored.room, phase: "discussion", phaseStartedAt: now(), currentSpeakerPlayerId: undefined };
     return;

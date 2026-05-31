@@ -179,6 +179,37 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
         };
       }
 
+      if (action === "restart") {
+        return {
+          ...currentSnapshot,
+          room: {
+            ...currentSnapshot.room,
+            phase: "lobby",
+            phaseStartedAt: new Date().toISOString(),
+            selectedCategory: undefined,
+            citizenWord: undefined,
+            liarWord: undefined,
+            currentSpeakerPlayerId: undefined,
+          },
+          players: currentSnapshot.players
+            .filter((player) => player.connectionStatus !== "left")
+            .map((player) => ({
+              ...player,
+              ready: player.isHost,
+              categoryVote: undefined,
+              voteTargetId: undefined,
+              voteConfirmed: false,
+              voteConfirmedAt: undefined,
+              role: undefined,
+              visibleRole: undefined,
+              word: undefined,
+              speakingDone: false,
+              usedTimeAdjust: false,
+            })),
+          messages: [],
+        };
+      }
+
       if (action === "time_adjust") {
         const deltaSeconds = typeof payload?.deltaSeconds === "number" ? payload.deltaSeconds : 0;
         return {
@@ -387,6 +418,11 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
     setMessage("");
   }
 
+  const discussionMessages = useMemo(
+    () => snapshot.messages.filter((item) => item.phase === "speaking" || item.phase === "discussion"),
+    [snapshot.messages],
+  );
+
   if (!localMock && (!supabaseAvailable || snapshot.room.id.startsWith("local-")) && !snapshot.players.length) {
     return (
       <main className="screen grid min-h-screen content-center">
@@ -540,7 +576,7 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
                 카테고리 {snapshot.room.selectedCategory} / 내 키워드 {getPlayerDisplayWord(me)}
               </p>
             </div>
-            <Chat messages={snapshot.messages.filter((item) => item.phase === "discussion")} message={message} players={snapshot.players} setMessage={setMessage} submit={submitMessage} />
+            <Chat messages={discussionMessages} message={message} players={snapshot.players} setMessage={setMessage} submit={submitMessage} />
             <DiscussionControls act={act} me={me} players={orderedPlayers} />
           </div>
           <PlayerList compact players={orderedPlayers} />
