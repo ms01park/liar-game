@@ -76,24 +76,43 @@ function getInviteBaseUrl() {
   return baseUrl.replace(/\/$/, "");
 }
 
-function SortablePlayer({ player, host }: { player: Player; host: boolean }) {
+function SortablePlayer({
+  act,
+  host,
+  player,
+}: {
+  act?: (action: string, payload?: Record<string, unknown>) => Promise<void>;
+  host: boolean;
+  player: Player;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: player.id });
   return (
     <li
-      className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[#12141b] px-3 py-2"
+      className="rounded-lg border border-[var(--line)] bg-[#12141b] p-3"
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
     >
-      <span className="font-bold">{player.nickname}</span>
-      <span className="flex items-center gap-2 text-xs font-bold text-[var(--muted)]">
-        {statusText(player)}
-        {player.isHost ? "방장" : ""}
-        {host ? (
-          <button className="cursor-grab rounded border border-[var(--line)] px-2 py-1" type="button" {...attributes} {...listeners}>
-            ::
-          </button>
-        ) : null}
-      </span>
+      <div className="flex items-center justify-between gap-2">
+        <b>{player.nickname}</b>
+        <span className="flex items-center gap-2 text-xs font-bold text-[var(--muted)]">
+          {player.isHost ? "방장" : null}
+          {statusText(player)}
+          {host && !player.isHost ? (
+            <button
+              className="rounded border border-[var(--line)] px-2 py-1 font-bold text-white"
+              onClick={() => act?.("remove_player", { playerId: player.id })}
+              type="button"
+            >
+              제거
+            </button>
+          ) : null}
+          {host ? (
+            <button className="cursor-grab rounded border border-[var(--line)] px-2 py-1" type="button" {...attributes} {...listeners}>
+              ::
+            </button>
+          ) : null}
+        </span>
+      </div>
     </li>
   );
 }
@@ -417,10 +436,7 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
               act={act}
               isHost={isHost}
               inviteUrl={inviteUrl}
-              onDragEnd={onDragEnd}
-              orderedPlayers={orderedPlayers}
               room={snapshot.room}
-              sensors={sensors}
             />
             <div className="mt-4 border-t border-[var(--line)] pt-4">
               <h2 className="mb-3 text-lg font-black">대기실 채팅</h2>
@@ -434,7 +450,7 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
               />
             </div>
           </div>
-          <PlayerList act={act} isHost={isHost} players={orderedPlayers} />
+          <PlayerList act={act} isHost={isHost} onDragEnd={onDragEnd} players={orderedPlayers} sensors={sensors} sortable />
         </section>
       ) : null}
 
@@ -557,12 +573,9 @@ function Lobby(props: {
   act: (action: string, payload?: Record<string, unknown>) => Promise<void>;
   isHost: boolean;
   inviteUrl: string;
-  onDragEnd: (event: DragEndEvent) => void;
-  orderedPlayers: Player[];
   room: RoomSnapshot["room"];
-  sensors: ReturnType<typeof useSensors>;
 }) {
-  const { act, isHost, inviteUrl, onDragEnd, orderedPlayers, room, sensors } = props;
+  const { act, isHost, inviteUrl, room } = props;
   const [mode, setMode] = useState<GameMode>(room.mode);
   const [liarCount, setLiarCount] = useState(room.liarCount);
   const [spyCount, setSpyCount] = useState(room.spyCount);
@@ -634,14 +647,6 @@ function Lobby(props: {
           </button>
         </div>
       ) : null}
-
-      <DndContext collisionDetection={closestCenter} onDragEnd={onDragEnd} sensors={sensors}>
-        <SortableContext items={orderedPlayers.map((player) => player.id)} strategy={verticalListSortingStrategy}>
-          <ol className="grid gap-2">
-            {orderedPlayers.map((player) => <SortablePlayer host={isHost} key={player.id} player={player} />)}
-          </ol>
-        </SortableContext>
-      </DndContext>
 
       <div className="grid gap-2 sm:grid-cols-2">
         <button className="btn btn-secondary" onClick={() => act("ready", { ready: true })} type="button">준비 완료</button>
@@ -721,42 +726,61 @@ function PlayerList({
   act,
   compact,
   isHost,
+  onDragEnd,
   players,
+  sensors,
+  sortable,
 }: {
   act?: (action: string, payload?: Record<string, unknown>) => Promise<void>;
   compact?: boolean;
   isHost?: boolean;
+  onDragEnd?: (event: DragEndEvent) => void;
   players: Player[];
+  sensors?: ReturnType<typeof useSensors>;
+  sortable?: boolean;
 }) {
+  const playerItems = players.map((player) => (
+    <li className="rounded-lg border border-[var(--line)] bg-[#12141b] p-3" key={player.id}>
+      <div className="flex justify-between gap-2">
+        <b>{player.nickname}</b>
+        <span className="flex items-center gap-2 text-xs text-[var(--muted)]">
+          {player.isHost ? "방장" : null}
+          {statusText(player)}
+          {isHost && !player.isHost ? (
+            <button
+              className="rounded border border-[var(--line)] px-2 py-1 font-bold text-white"
+              onClick={() => act?.("remove_player", { playerId: player.id })}
+              type="button"
+            >
+              제거
+            </button>
+          ) : null}
+        </span>
+      </div>
+      {!compact ? (
+        <p className="mt-1 text-xs text-[var(--muted)]">
+          {player.voteConfirmed ? "투표 확정" : player.voteTargetId ? "투표 선택" : ""} {player.speakingDone ? "설명 완료" : ""}
+        </p>
+      ) : null}
+    </li>
+  ));
+
   return (
     <section className="panel rounded-lg p-4">
-      <h2 className="mb-3 text-lg font-black">참가자</h2>
-      <ol className="grid gap-2">
-        {players.map((player) => (
-          <li className="rounded-lg border border-[var(--line)] bg-[#12141b] p-3" key={player.id}>
-            <div className="flex justify-between gap-2">
-              <b>{player.nickname}</b>
-              <span className="flex items-center gap-2 text-xs text-[var(--muted)]">
-                {statusText(player)}
-                {isHost && !player.isHost && (player.connectionStatus === "disconnected" || player.connectionStatus === "left") ? (
-                  <button
-                    className="rounded border border-[var(--line)] px-2 py-1 font-bold text-white"
-                    onClick={() => act?.("remove_player", { playerId: player.id })}
-                    type="button"
-                  >
-                    제거
-                  </button>
-                ) : null}
-              </span>
-            </div>
-            {!compact ? (
-              <p className="mt-1 text-xs text-[var(--muted)]">
-                {player.voteConfirmed ? "투표 확정" : player.voteTargetId ? "투표 선택" : ""} {player.speakingDone ? "설명 완료" : ""}
-              </p>
-            ) : null}
-          </li>
-        ))}
-      </ol>
+      <h2 className="mb-3 text-lg font-black">{sortable ? "참가자 대기열" : "참가자"}</h2>
+      {sortable && sensors && onDragEnd ? (
+        <DndContext collisionDetection={closestCenter} onDragEnd={onDragEnd} sensors={sensors}>
+          <SortableContext items={players.map((player) => player.id)} strategy={verticalListSortingStrategy}>
+            <ol className="grid gap-2">
+              {players.map((player) => (
+                <SortablePlayer act={act} host={Boolean(isHost)} key={player.id} player={player} />
+              ))}
+            </ol>
+          </SortableContext>
+        </DndContext>
+      ) : (
+        <ol className="grid gap-2">{playerItems}</ol>
+      )}
     </section>
   );
 }
