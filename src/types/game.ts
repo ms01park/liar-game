@@ -35,6 +35,7 @@ export type Player = {
   usedTimeAdjust?: boolean;
   speakingDone?: boolean;
   lastSeenAt?: string;
+  joinedAt?: string;
   connectionStatus?: "connected" | "disconnected" | "left";
 };
 

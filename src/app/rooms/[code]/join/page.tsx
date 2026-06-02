@@ -48,13 +48,13 @@ export default function JoinRoomPage({ params }: { params: Promise<{ code: strin
   }
 
   return (
-    <main className="screen grid min-h-screen content-center">
-      <form className="panel grid gap-5 rounded-lg p-5" onSubmit={submit}>
+    <main className="screen grid min-h-[100svh] content-center">
+      <form className="panel grid w-full gap-4 rounded-lg p-4 sm:gap-5 sm:p-5" onSubmit={submit}>
         <Link className="btn btn-ghost w-fit" href="/rooms/join">
           코드 다시 입력
         </Link>
         <p className="font-black text-[var(--gold)]">{normalizedCode}</p>
-        <h1 className="text-3xl font-black">방 참가</h1>
+        <h1 className="text-2xl font-black sm:text-3xl">방 참가</h1>
         <label className="label">
           닉네임
           <input className="input" onChange={(event) => setNickname(event.target.value)} value={nickname} />

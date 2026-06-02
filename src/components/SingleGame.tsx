@@ -91,8 +91,8 @@ export function SingleGame() {
   }
 
   return (
-    <main className="screen grid gap-5">
-      <header className="flex items-center justify-between gap-3">
+    <main className="screen grid gap-4 sm:gap-5">
+      <header className="flex flex-wrap items-center justify-between gap-3">
         <Link className="btn btn-ghost" href="/">
           처음으로
         </Link>
@@ -100,9 +100,9 @@ export function SingleGame() {
       </header>
 
       {step === "setup" ? (
-        <section className="panel grid gap-5 rounded-lg p-5">
-          <h1 className="text-3xl font-black">라운드 설정</h1>
-          <div className="grid gap-3 sm:grid-cols-4">
+        <section className="panel grid gap-4 rounded-lg p-4 sm:gap-5 sm:p-5">
+          <h1 className="text-2xl font-black sm:text-3xl">라운드 설정</h1>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <label className="label">
               참가자 수
               <input
@@ -143,42 +143,42 @@ export function SingleGame() {
             />
           </section>
           {setupError ? <p className="font-bold text-[var(--red)]">{setupError}</p> : null}
-          <button className="btn btn-primary" disabled={Boolean(setupError)} onClick={() => startRound()} type="button">
+          <button className="btn btn-primary w-full" disabled={Boolean(setupError)} onClick={() => startRound()} type="button">
             카드 만들기
           </button>
         </section>
       ) : null}
 
       {step === "handoff" && currentPlayer ? (
-        <section className="panel grid min-h-[70vh] content-center gap-5 rounded-lg p-6 text-center">
+        <section className="panel grid min-h-[calc(100svh-96px)] content-center gap-5 rounded-lg p-5 text-center sm:min-h-[70vh] sm:p-6">
           <p className="text-sm font-black text-[var(--gold)]">{roundCategory}</p>
-          <h1 className="text-4xl font-black">{currentPlayer.nickname} 차례입니다</h1>
+          <h1 className="text-3xl font-black sm:text-4xl">{currentPlayer.nickname} 차례입니다</h1>
           <p className="text-[var(--muted)]">다른 사람이 화면을 보지 않게 한 뒤 확인하세요.</p>
-          <button className="btn btn-primary" onClick={() => setStep("card")} type="button">
+          <button className="btn btn-primary w-full sm:w-auto" onClick={() => setStep("card")} type="button">
             내 카드 보기
           </button>
         </section>
       ) : null}
 
       {step === "card" && currentPlayer ? (
-        <section className="panel grid min-h-[70vh] content-center gap-5 rounded-lg p-6 text-center">
+        <section className="panel grid min-h-[calc(100svh-96px)] content-center gap-5 rounded-lg p-5 text-center sm:min-h-[70vh] sm:p-6">
           <p className="text-sm font-black text-[var(--muted)]">{currentPlayer.nickname}</p>
-          <div className="rounded-lg border border-[var(--line)] bg-[#11131a] p-7">
+          <div className="rounded-lg border border-[var(--line)] bg-[#11131a] p-5 sm:p-7">
             <p className="text-lg font-black text-[var(--gold)]">
               {roleLabel(currentPlayer)}
             </p>
-            <h1 className="mt-3 text-5xl font-black">{revealMain(currentPlayer)}</h1>
+            <h1 className="mt-3 break-keep text-4xl font-black sm:text-5xl">{revealMain(currentPlayer)}</h1>
             {revealSub(currentPlayer) ? <p className="mt-4 text-sm leading-6 text-[var(--muted)]">{revealSub(currentPlayer)}</p> : null}
           </div>
-          <button className="btn btn-secondary" onClick={nextPlayer} type="button">
+          <button className="btn btn-secondary w-full sm:w-auto" onClick={nextPlayer} type="button">
             확인 완료
           </button>
         </section>
       ) : null}
 
       {step === "category" ? (
-        <section className="panel grid gap-5 rounded-lg p-5">
-          <h1 className="text-3xl font-black">다음 라운드 카테고리</h1>
+        <section className="panel grid gap-4 rounded-lg p-4 sm:gap-5 sm:p-5">
+          <h1 className="text-2xl font-black sm:text-3xl">다음 라운드 카테고리</h1>
           <p className="text-[var(--muted)]">결과 공개 없이 바로 다음 라운드 카테고리를 고릅니다.</p>
           <CategoryGrid
             packs={wordPacks}
@@ -186,7 +186,7 @@ export function SingleGame() {
             selected={categorySelection}
             onSelect={setCategorySelection}
           />
-          <button className="btn btn-primary" onClick={() => startRound(categorySelection)} type="button">
+          <button className="btn btn-primary w-full" onClick={() => startRound(categorySelection)} type="button">
             같은 설정으로 다시 시작
           </button>
         </section>

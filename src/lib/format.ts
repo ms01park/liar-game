@@ -62,6 +62,7 @@ export function mapPlayer(row: PlayerRow): Player {
     usedTimeAdjust: asBoolean(row.used_time_adjust),
     speakingDone: asBoolean(row.speaking_done),
     lastSeenAt: asString(row.last_seen_at) || undefined,
+    joinedAt: asString(row.joined_at) || undefined,
     connectionStatus: (asString(row.connection_status) || undefined) as Player["connectionStatus"],
   };
 }

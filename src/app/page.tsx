@@ -29,8 +29,8 @@ export default function Home() {
   const wordCount = wordPacks.reduce((sum, pack) => sum + pack.words.length, 0);
 
   return (
-    <main className="screen grid min-h-screen content-center gap-7">
-      <section className="grid gap-5">
+    <main className="screen grid min-h-[100svh] content-start gap-5 py-4 sm:content-center sm:gap-7">
+      <section className="grid gap-4 sm:gap-5">
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-black uppercase tracking-[0.22em] text-[var(--gold)]">
             Liar Game
@@ -39,10 +39,10 @@ export default function Home() {
             {wordPacks.length} x 100
           </span>
         </div>
-        <h1 className="max-w-3xl text-5xl font-black leading-tight sm:text-7xl">
+        <h1 className="max-w-3xl text-4xl font-black leading-tight sm:text-7xl">
           한 단어를 숨기고, 한 사람을 찾아내세요.
         </h1>
-        <p className="max-w-2xl text-lg leading-8 text-[var(--muted)]">
+        <p className="max-w-2xl text-base leading-7 text-[var(--muted)] sm:text-lg sm:leading-8">
           엑셀에서 변환한 {wordPacks.length}개 카테고리, {wordCount}개 키워드로 진행하는 모바일 우선 라이어 게임입니다.
         </p>
       </section>
@@ -50,31 +50,31 @@ export default function Home() {
       <section className="grid gap-3 md:grid-cols-3">
         {actions.map((action) => (
           <Link
-            className={`panel grid min-h-44 content-between rounded-lg border p-5 transition hover:-translate-y-0.5 ${action.tone}`}
+            className={`panel grid min-h-36 content-between rounded-lg border p-4 transition hover:-translate-y-0.5 sm:min-h-44 sm:p-5 ${action.tone}`}
             href={action.href}
             key={action.href}
           >
             <div className="grid gap-2">
               <p className="text-sm font-black text-[var(--gold)]">{action.label}</p>
-              <h2 className="text-2xl font-black">{action.title}</h2>
+              <h2 className="text-xl font-black sm:text-2xl">{action.title}</h2>
               <p className="text-sm leading-6 text-[var(--muted)]">{action.body}</p>
             </div>
-            <span className="btn btn-secondary mt-5 w-full">시작</span>
+            <span className="btn btn-secondary mt-4 w-full sm:mt-5">시작</span>
           </Link>
         ))}
       </section>
 
       <section className="grid grid-cols-3 gap-2 rounded-lg border border-[var(--line)] bg-black/20 p-3 text-center">
         <div>
-          <p className="text-2xl font-black">{wordPacks.length}</p>
+          <p className="text-xl font-black sm:text-2xl">{wordPacks.length}</p>
           <p className="text-xs font-bold text-[var(--muted)]">카테고리</p>
         </div>
         <div>
-          <p className="text-2xl font-black">{wordCount}</p>
+          <p className="text-xl font-black sm:text-2xl">{wordCount}</p>
           <p className="text-xs font-bold text-[var(--muted)]">키워드</p>
         </div>
         <div>
-          <p className="text-2xl font-black">2x10</p>
+          <p className="text-xl font-black sm:text-2xl">2x10</p>
           <p className="text-xs font-bold text-[var(--muted)]">카테고리 배열</p>
         </div>
       </section>

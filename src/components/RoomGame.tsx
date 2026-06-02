@@ -98,6 +98,16 @@ function mergeSnapshot(current: RoomSnapshot, next: RoomSnapshot) {
   return isStalePhaseSnapshot(current, next) ? current : next;
 }
 
+function joinedByPhaseStart(player?: Player, phaseStartedAt?: string) {
+  if (!player) return false;
+  if (!phaseStartedAt || !player.joinedAt) return true;
+  return new Date(player.joinedAt).getTime() <= new Date(phaseStartedAt).getTime();
+}
+
+function isRoundPlayer(player?: Player) {
+  return Boolean(player?.role);
+}
+
 function SortablePlayer({
   act,
   host,
@@ -114,9 +124,9 @@ function SortablePlayer({
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
     >
-      <div className="flex items-center justify-between gap-2">
-        <b>{player.nickname}</b>
-        <span className="flex items-center gap-2 text-xs font-bold text-[var(--muted)]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <b className="min-w-0 break-words">{player.nickname}</b>
+        <span className="flex flex-wrap items-center justify-end gap-2 text-xs font-bold text-[var(--muted)]">
           {player.isHost ? "방장" : null}
           {statusText(player)}
           {host && !player.isHost ? (
@@ -415,22 +425,25 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
   );
   const isHost = Boolean(me?.isHost);
   const inviteUrl = useMemo(() => `${getInviteBaseUrl()}/rooms/${code}/join`, [code]);
-  const currentSpeaker = orderedPlayers.find((player) => player.id === snapshot.room.currentSpeakerPlayerId);
-  const currentSpeakerIndex = currentSpeaker ? orderedPlayers.findIndex((player) => player.id === currentSpeaker.id) : 0;
+  const roundPlayers = useMemo(
+    () => orderedPlayers.filter((player) => isRoundPlayer(player)),
+    [orderedPlayers],
+  );
+  const canCategoryVote = joinedByPhaseStart(me, snapshot.room.phaseStartedAt);
+  const canPlayRound = isRoundPlayer(me);
+  const currentSpeaker = roundPlayers.find((player) => player.id === snapshot.room.currentSpeakerPlayerId);
+  const currentSpeakerIndex = currentSpeaker ? roundPlayers.findIndex((player) => player.id === currentSpeaker.id) : 0;
   const isCurrentSpeaker = Boolean(me && me.id === currentSpeaker?.id);
   const speakingMessages = useMemo(
     () => snapshot.messages.filter((item) => item.phase === "speaking"),
     [snapshot.messages],
   );
-  const currentSpeakerSentMessage = Boolean(
-    currentSpeaker && speakingMessages.some((item) => item.playerId === currentSpeaker.id),
-  );
   const revealText = getKeywordRevealText(me);
   const winner =
     snapshot.room.phase === "result"
       ? decideWinner({
-          players: snapshot.players,
-          voteTargetIds: snapshot.players.flatMap((player) => parseVoteTargetIds(player)),
+          players: roundPlayers,
+          voteTargetIds: roundPlayers.flatMap((player) => parseVoteTargetIds(player)),
         })
       : null;
 
@@ -448,6 +461,13 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
     if (sent) setMessage("");
   }
 
+  function finishCurrentSpeaker() {
+    return act("finish_speaker", {
+      speakerId: snapshot.room.currentSpeakerPlayerId,
+      phaseStartedAt: snapshot.room.phaseStartedAt,
+    });
+  }
+
   const discussionMessages = useMemo(
     () => snapshot.messages.filter((item) => item.phase === "speaking" || item.phase === "discussion"),
     [snapshot.messages],
@@ -455,12 +475,12 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
 
   if (!localMock && (!supabaseAvailable || snapshot.room.id.startsWith("local-")) && !snapshot.players.length) {
     return (
-      <main className="screen grid min-h-screen content-center">
-        <section className="panel grid gap-4 rounded-lg p-5">
+      <main className="screen grid min-h-[100svh] content-center">
+        <section className="panel grid gap-4 rounded-lg p-4 sm:p-5">
           <Link className="btn btn-ghost w-fit" href="/">
             처음으로
           </Link>
-          <h1 className="text-3xl font-black">Supabase 설정이 필요합니다</h1>
+          <h1 className="text-2xl font-black sm:text-3xl">Supabase 설정이 필요합니다</h1>
           <p className="text-[var(--muted)]">{missingSupabaseMessage()}</p>
         </section>
       </main>
@@ -469,12 +489,12 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
 
   if (localMock && !snapshot.players.length) {
     return (
-      <main className="screen grid min-h-screen content-center">
-        <section className="panel grid gap-4 rounded-lg p-5">
+      <main className="screen grid min-h-[100svh] content-center">
+        <section className="panel grid gap-4 rounded-lg p-4 sm:p-5">
           <Link className="btn btn-ghost w-fit" href="/rooms/join">
             방 찾기
           </Link>
-          <h1 className="text-3xl font-black">존재하지 않는 방입니다</h1>
+          <h1 className="text-2xl font-black sm:text-3xl">존재하지 않는 방입니다</h1>
           <p className="text-[var(--muted)]">로컬 mock 모드에서는 이 브라우저의 localStorage에 저장된 방만 열 수 있습니다.</p>
         </section>
       </main>
@@ -522,14 +542,16 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
 
       {snapshot.room.phase === "category_vote" ? (
         <section className="panel grid gap-4 rounded-lg p-4">
-          <h1 className="text-3xl font-black">카테고리 투표</h1>
+          <h1 className="text-2xl font-black sm:text-3xl">카테고리 투표</h1>
           <TimerBar seconds={10} startedAt={snapshot.room.phaseStartedAt} onDone={() => isHost && act("finish_category_vote")} />
           <CategoryGrid
+            disabled={!canCategoryVote}
             packs={wordPacks}
             randomSelected={me?.categoryVote === "__random__"}
             selected={me?.categoryVote}
             votes={Object.fromEntries(
               snapshot.players
+                .filter((player) => joinedByPhaseStart(player, snapshot.room.phaseStartedAt))
                 .map((player) => player.categoryVote)
                 .filter(Boolean)
                 .reduce<Map<string, number>>((map, category) => {
@@ -539,25 +561,35 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
             )}
             onSelect={(category) => act("category_vote", { category })}
           />
+          {!canCategoryVote ? <p className="text-sm font-bold text-[var(--muted)]">이미 진행 중인 라운드입니다. 다음 라운드부터 참여할 수 있습니다.</p> : null}
         </section>
       ) : null}
 
       {snapshot.room.phase === "category_result" ? (
-        <section className="panel grid min-h-[50vh] content-center gap-4 rounded-lg p-5 text-center">
+        <section className="panel grid min-h-[calc(100svh-120px)] content-center gap-4 rounded-lg p-4 text-center sm:min-h-[50vh] sm:p-5">
           <p className="font-black text-[var(--gold)]">선택된 카테고리</p>
-          <h1 className="text-5xl font-black">{snapshot.room.selectedCategory}</h1>
+          <h1 className="break-keep text-4xl font-black sm:text-5xl">{snapshot.room.selectedCategory}</h1>
           <TimerBar seconds={3} startedAt={snapshot.room.phaseStartedAt} onDone={() => isHost && act("finish_reveal", { phase: "keyword_reveal" })} />
         </section>
       ) : null}
 
       {snapshot.room.phase === "keyword_reveal" ? (
-        <section className="panel grid min-h-[55vh] content-center gap-4 rounded-lg p-5 text-center">
+        <section className="panel grid min-h-[calc(100svh-120px)] content-center gap-4 rounded-lg p-4 text-center sm:min-h-[55vh] sm:p-5">
           <p className="font-black text-[var(--gold)]">{snapshot.room.selectedCategory}</p>
-          <div className="rounded-lg border border-[var(--line)] bg-[#11131a] p-8">
-            <p className="text-lg font-black text-[var(--muted)]">{roleLabel(me)}</p>
-            <p className="mt-2 text-sm font-bold text-[var(--gold)]">{revealText.label}</p>
-            <h1 className="mt-3 text-5xl font-black">{revealText.main}</h1>
-            {revealText.sub ? <p className="mt-4 text-sm leading-6 text-[var(--muted)]">{revealText.sub}</p> : null}
+          <div className="rounded-lg border border-[var(--line)] bg-[#11131a] p-5 sm:p-8">
+            {canPlayRound ? (
+              <>
+                <p className="text-lg font-black text-[var(--muted)]">{roleLabel(me)}</p>
+                <p className="mt-2 text-sm font-bold text-[var(--gold)]">{revealText.label}</p>
+                <h1 className="mt-3 break-keep text-4xl font-black sm:text-5xl">{revealText.main}</h1>
+                {revealText.sub ? <p className="mt-4 text-sm leading-6 text-[var(--muted)]">{revealText.sub}</p> : null}
+              </>
+            ) : (
+              <>
+                <p className="text-lg font-black text-[var(--muted)]">대기 중</p>
+                <h1 className="mt-3 break-keep text-3xl font-black sm:text-4xl">다음 라운드부터 참여할 수 있습니다</h1>
+              </>
+            )}
           </div>
           <TimerBar seconds={snapshot.room.revealSeconds} startedAt={snapshot.room.phaseStartedAt} onDone={() => isHost && act("finish_reveal", { phase: "speaking" })} />
         </section>
@@ -565,13 +597,13 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
 
       {snapshot.room.phase === "speaking" ? (
         <section className="grid gap-4 lg:grid-cols-[1fr_300px]">
-          <div className="panel grid min-h-[560px] grid-rows-[auto_1fr_auto] gap-3 rounded-lg p-4">
+          <div className="panel grid min-h-[calc(100svh-120px)] grid-rows-[auto_1fr_auto] gap-3 rounded-lg p-3 sm:p-4 lg:min-h-[560px]">
             <SpeakingHeader
               category={snapshot.room.selectedCategory}
               currentSpeaker={currentSpeaker}
               currentSpeakerIndex={currentSpeakerIndex}
               me={me}
-              playerCount={orderedPlayers.length}
+              playerCount={roundPlayers.length}
               seconds={snapshot.room.speakingSeconds}
               startedAt={snapshot.room.phaseStartedAt}
             />
@@ -585,26 +617,26 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
               submit={submitMessage}
             />
             <div className="grid gap-2 sm:grid-cols-2">
-              <button className="btn btn-primary" disabled={!isCurrentSpeaker || !currentSpeakerSentMessage} onClick={() => act("finish_speaker")} type="button">
+              <button className="btn btn-primary" disabled={!isCurrentSpeaker} onClick={() => finishCurrentSpeaker()} type="button">
                 {isCurrentSpeaker ? "설명 완료" : "현재 설명자만 완료 가능"}
               </button>
               <TimerBar
                 seconds={snapshot.room.speakingSeconds}
                 startedAt={snapshot.room.phaseStartedAt}
-                onDone={isHost && currentSpeakerSentMessage ? () => act("finish_speaker") : undefined}
+                onDone={isHost ? () => finishCurrentSpeaker() : undefined}
               />
             </div>
           </div>
-          <PlayerList compact players={orderedPlayers} />
+          <PlayerList compact players={roundPlayers} />
         </section>
       ) : null}
 
       {snapshot.room.phase === "discussion" ? (
         <section className="grid gap-4 lg:grid-cols-[1fr_320px]">
-          <div className="panel grid min-h-[620px] grid-rows-[auto_1fr_auto] gap-3 rounded-lg p-4">
+          <div className="panel grid min-h-[calc(100svh-120px)] grid-rows-[auto_1fr_auto] gap-3 rounded-lg p-3 sm:p-4 lg:min-h-[620px]">
             <div className="grid gap-2">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h1 className="text-3xl font-black">토론과 투표</h1>
+                <h1 className="text-2xl font-black sm:text-3xl">토론과 투표</h1>
                 <TimerBar seconds={snapshot.room.talkSeconds} startedAt={snapshot.room.phaseStartedAt} onDone={() => isHost && act("finish_discussion")} />
               </div>
               <p className="text-sm text-[var(--muted)]">
@@ -612,15 +644,15 @@ export function RoomGame({ initial, code }: { initial: RoomSnapshot; code: strin
               </p>
             </div>
             <Chat messages={discussionMessages} message={message} players={snapshot.players} setMessage={setMessage} submit={submitMessage} />
-            <DiscussionControls act={act} me={me} players={orderedPlayers} requiredVotes={requiredVoteCount(snapshot.room.liarCount, orderedPlayers.length)} />
+            <DiscussionControls act={act} me={me} players={roundPlayers} requiredVotes={requiredVoteCount(snapshot.room.liarCount, roundPlayers.length)} />
           </div>
-          <PlayerList compact players={orderedPlayers} />
+          <PlayerList compact players={roundPlayers} />
         </section>
       ) : null}
 
       {snapshot.room.phase === "result" ? (
-        <section className="panel grid gap-5 rounded-lg p-5">
-          <h1 className="text-4xl font-black">{winner?.winner === "citizen" ? "시민 승리" : "라이어 승리"}</h1>
+        <section className="panel grid gap-4 rounded-lg p-4 sm:gap-5 sm:p-5">
+          <h1 className="text-3xl font-black sm:text-4xl">{winner?.winner === "citizen" ? "시민 승리" : "라이어 승리"}</h1>
           <div className="grid gap-2 rounded-lg border border-[var(--line)] bg-[#11131a] p-4">
             <p>카테고리: <b>{snapshot.room.selectedCategory}</b></p>
             <p>시민 키워드: <b>{snapshot.room.citizenWord}</b></p>
@@ -663,7 +695,7 @@ function Lobby(props: {
     <section className="grid gap-4">
       <div className="grid gap-4 md:grid-cols-[1fr_180px]">
         <div>
-          <h1 className="text-3xl font-black">대기실</h1>
+          <h1 className="text-2xl font-black sm:text-3xl">대기실</h1>
           <p className="text-[var(--muted)]">링크나 QR로 참가자를 초대하세요.</p>
           <p className="mt-3 break-all rounded-lg border border-[var(--line)] bg-[#11131a] p-3 text-sm font-bold text-[var(--muted)]">{inviteUrl}</p>
           <button className="btn btn-secondary mt-3" onClick={() => navigator.clipboard?.writeText(inviteUrl)} type="button">
@@ -681,7 +713,7 @@ function Lobby(props: {
             공유
           </button>
         </div>
-        <div className="grid place-items-center rounded-lg bg-white p-3">
+        <div className="mx-auto grid w-full max-w-[180px] place-items-center rounded-lg bg-white p-3 md:mx-0">
           {inviteUrl ? <QRCodeSVG value={inviteUrl} size={150} /> : null}
         </div>
       </div>
@@ -773,10 +805,11 @@ function DiscussionControls(props: {
 }) {
   const { act, me, players, requiredVotes } = props;
   const selectedTargetIds = me ? parseVoteTargetIds(me) : [];
-  const canConfirm = Boolean(selectedTargetIds.length >= requiredVotes && !me?.voteConfirmed);
+  const canVote = isRoundPlayer(me);
+  const canConfirm = Boolean(canVote && selectedTargetIds.length >= requiredVotes && !me?.voteConfirmed);
 
   function toggleVoteTarget(targetId: string) {
-    if (!me || me.voteConfirmed) return;
+    if (!canVote || !me || me.voteConfirmed) return;
     const selected = new Set(selectedTargetIds);
     if (selected.has(targetId)) {
       selected.delete(targetId);
@@ -797,7 +830,7 @@ function DiscussionControls(props: {
             {row.map((player) => (
               <button
                 className="btn btn-secondary"
-                disabled={me?.voteConfirmed}
+                disabled={!canVote || me?.voteConfirmed}
                 key={player.id}
                 onClick={() => toggleVoteTarget(player.id)}
                 type="button"
@@ -809,13 +842,17 @@ function DiscussionControls(props: {
         ))}
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
-        <button className="btn btn-ghost" disabled={me?.usedTimeAdjust} onClick={() => act("time_adjust", { deltaSeconds: -15 })} type="button">15초 단축</button>
-        <button className="btn btn-ghost" disabled={me?.usedTimeAdjust} onClick={() => act("time_adjust", { deltaSeconds: 15 })} type="button">15초 연장</button>
+        <button className="btn btn-ghost" disabled={!canVote || me?.usedTimeAdjust} onClick={() => act("time_adjust", { deltaSeconds: -15 })} type="button">15초 단축</button>
+        <button className="btn btn-ghost" disabled={!canVote || me?.usedTimeAdjust} onClick={() => act("time_adjust", { deltaSeconds: 15 })} type="button">15초 연장</button>
         <button className="btn btn-primary" disabled={!canConfirm} onClick={() => act("confirm_vote")} type="button">
           {me?.voteConfirmed ? "투표 확정 완료" : "투표 확정"}
         </button>
       </div>
-      {selectedTargetIds.length < requiredVotes ? <p className="text-sm font-bold text-[var(--muted)]">먼저 투표할 플레이어를 선택하세요.</p> : null}
+      {!canVote ? (
+        <p className="text-sm font-bold text-[var(--muted)]">이미 진행 중인 라운드입니다. 다음 라운드부터 투표할 수 있습니다.</p>
+      ) : selectedTargetIds.length < requiredVotes ? (
+        <p className="text-sm font-bold text-[var(--muted)]">먼저 투표할 플레이어를 선택하세요.</p>
+      ) : null}
     </div>
   );
 }
@@ -839,9 +876,9 @@ function PlayerList({
 }) {
   const playerItems = players.map((player) => (
     <li className="rounded-lg border border-[var(--line)] bg-[#12141b] p-3" key={player.id}>
-      <div className="flex justify-between gap-2">
-        <b>{player.nickname}</b>
-        <span className="flex items-center gap-2 text-xs text-[var(--muted)]">
+      <div className="flex flex-wrap justify-between gap-2">
+        <b className="min-w-0 break-words">{player.nickname}</b>
+        <span className="flex flex-wrap items-center justify-end gap-2 text-xs text-[var(--muted)]">
           {player.isHost ? "방장" : null}
           {statusText(player)}
           {isHost && !player.isHost ? (
@@ -903,7 +940,7 @@ function Chat(props: {
 
   return (
     <section className="grid min-h-0 grid-rows-[1fr_auto] gap-3">
-      <div className="h-[min(44vh,420px)] min-h-[220px] overflow-y-auto rounded-lg border border-[var(--line)] bg-[#11131a] p-3" ref={scrollRef}>
+      <div className="h-[min(42svh,420px)] min-h-[180px] overflow-y-auto rounded-lg border border-[var(--line)] bg-[#11131a] p-3 sm:min-h-[220px]" ref={scrollRef}>
         {messages.length ? (
           messages.map((item) => (
             <p className="mb-2 text-sm" key={item.id}>
@@ -916,7 +953,7 @@ function Chat(props: {
         )}
       </div>
       <form
-        className="flex gap-2"
+        className="grid grid-cols-[minmax(0,1fr)_auto] gap-2"
         onSubmit={(event) => {
           event.preventDefault();
           if (!isComposing) void submit();

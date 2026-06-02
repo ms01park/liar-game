@@ -73,8 +73,21 @@ function activePlayers(players: Player[]) {
   return getActivePlayers(players);
 }
 
-function connectedPlayers(players: Player[]) {
-  return activePlayers(players).filter((player) => player.connectionStatus !== "disconnected");
+function joinedByPhaseStart(player: Player, phaseStartedAt?: string) {
+  if (!phaseStartedAt || !player.joinedAt) return true;
+  return new Date(player.joinedAt).getTime() <= new Date(phaseStartedAt).getTime();
+}
+
+function categoryVotePlayers(stored: StoredRoom) {
+  return activePlayers(stored.players).filter((player) => joinedByPhaseStart(player, stored.room.phaseStartedAt));
+}
+
+function roundPlayers(players: Player[]) {
+  return activePlayers(players).filter((player) => Boolean(player.role));
+}
+
+function connectedRoundPlayers(players: Player[]) {
+  return roundPlayers(players).filter((player) => player.connectionStatus !== "disconnected");
 }
 
 function orderedConnectedPlayers(players: Player[]) {
@@ -147,6 +160,7 @@ export function createLocalMockRoom(params: { roomName: string; password: string
     ready: true,
     sortOrder: 0,
     lastSeenAt: timestamp,
+    joinedAt: timestamp,
     connectionStatus: "connected",
   };
   const stored: StoredRoom = { room, players: [host], messages: [], password: params.password };
@@ -164,6 +178,7 @@ export function joinLocalMockRoom(params: { code: string; nickname: string; pass
   if (!params.nickname.trim()) throw new Error("닉네임을 입력하세요");
   if (activePlayers(stored.players).length >= stored.room.maxPlayers) throw new Error("방이 가득 찼습니다");
 
+  const timestamp = now();
   const player: Player = {
     id: makeId("player"),
     roomId: stored.room.id,
@@ -171,7 +186,8 @@ export function joinLocalMockRoom(params: { code: string; nickname: string; pass
     isHost: false,
     ready: false,
     sortOrder: activePlayers(stored.players).length,
-    lastSeenAt: now(),
+    lastSeenAt: timestamp,
+    joinedAt: timestamp,
     connectionStatus: "connected",
   };
   const session = { playerId: player.id, token: makeId("token") };
@@ -231,12 +247,12 @@ function validateStart(stored: StoredRoom) {
 }
 
 function firstSpeaker(stored: StoredRoom) {
-  return orderedConnectedPlayers(stored.players)[0];
+  return roundPlayers(orderedConnectedPlayers(stored.players))[0];
 }
 
 function advanceSpeaker(stored: StoredRoom) {
   const current = stored.players.find((player) => player.id === stored.room.currentSpeakerPlayerId);
-  const next = orderedConnectedPlayers(stored.players).find(
+  const next = roundPlayers(orderedConnectedPlayers(stored.players)).find(
     (player) => (!current || player.sortOrder > current.sortOrder) && !player.speakingDone,
   );
   if (!next) {
@@ -248,12 +264,13 @@ function advanceSpeaker(stored: StoredRoom) {
 
 function assignCategoryAndWords(stored: StoredRoom) {
   const categoryIds = wordPacks.map((pack) => pack.category);
-  const { selected } = decideCategoryVote({ players: activePlayers(stored.players), categoryIds, randomId: RANDOM_ID });
+  const voters = categoryVotePlayers(stored);
+  const { selected } = decideCategoryVote({ players: voters, categoryIds, randomId: RANDOM_ID });
   const chosen = selected === RANDOM_ID ? categoryIds[Math.floor(Math.random() * categoryIds.length)] : selected;
   const pack = wordPacks.find((item) => item.category === chosen) ?? wordPacks[0];
   const { citizenWord, liarWord } = pickTwoWords(pack.words);
   const assigned = assignRoles({
-    players: activePlayers(stored.players),
+    players: voters,
     mode: stored.room.mode,
     liarCount: Math.max(1, stored.room.liarCount),
     spyCount: stored.room.mode === "spy" ? Math.max(1, stored.room.spyCount) : 0,
@@ -274,7 +291,7 @@ function assignCategoryAndWords(stored: StoredRoom) {
 }
 
 function allVotesConfirmed(stored: StoredRoom) {
-  return connectedPlayers(stored.players).every((player) => player.voteConfirmed);
+  return connectedRoundPlayers(stored.players).every((player) => player.voteConfirmed);
 }
 
 export function localMockRoomAction(params: {
@@ -355,6 +372,9 @@ export function localMockRoomAction(params: {
   }
 
   if (params.action === "category_vote") {
+    if (!categoryVotePlayers(stored).some((player) => player.id === actor.id)) {
+      throw new Error("이미 진행 중인 라운드에는 카테고리 투표할 수 없습니다.");
+    }
     const category = stringValue(params.payload?.category);
     updatePlayers(stored, (player) => (player.id === actor.id ? { ...player, categoryVote: category } : player));
   }
@@ -371,6 +391,16 @@ export function localMockRoomAction(params: {
   }
 
   if (params.action === "finish_speaker") {
+    const expectedSpeakerId = stringValue(params.payload?.speakerId);
+    const expectedPhaseStartedAt = stringValue(params.payload?.phaseStartedAt);
+    if (
+      stored.room.phase !== "speaking" ||
+      (expectedSpeakerId && expectedSpeakerId !== stored.room.currentSpeakerPlayerId) ||
+      (expectedPhaseStartedAt && expectedPhaseStartedAt !== stored.room.phaseStartedAt)
+    ) {
+      saveRoom(stored);
+      return getLocalMockRoomByCode(params.code);
+    }
     if (actor.id !== stored.room.currentSpeakerPlayerId && !actor.isHost) {
       throw new Error("현재 설명자만 완료할 수 있습니다.");
     }
@@ -396,16 +426,18 @@ export function localMockRoomAction(params: {
   }
 
   if (params.action === "time_adjust") {
+    if (!actor.role) throw new Error("이번 라운드 참여자만 시간을 조정할 수 있습니다.");
     const delta = numberValue(params.payload?.deltaSeconds, 0);
     stored.room = { ...stored.room, talkSeconds: Math.max(15, stored.room.talkSeconds + delta) };
     updatePlayers(stored, (player) => (player.id === actor.id ? { ...player, usedTimeAdjust: true } : player));
   }
 
   if (params.action === "vote") {
+    if (!actor.role) throw new Error("이번 라운드 참여자만 투표할 수 있습니다.");
     if (actor.voteConfirmed) throw new Error("이미 투표를 확정했습니다.");
     const targetIds = targetIdsValue(params.payload?.targetIds);
     const nextTargetIds = targetIds.length ? targetIds : [stringValue(params.payload?.targetId)].filter(Boolean);
-    const activeIds = new Set(connectedPlayers(stored.players).map((player) => player.id));
+    const activeIds = new Set(connectedRoundPlayers(stored.players).map((player) => player.id));
     const maxVotes = requiredVoteCount(stored.room.liarCount, activeIds.size);
     const selectedIds = [...new Set(nextTargetIds)].filter((id) => activeIds.has(id)).slice(0, maxVotes);
     updatePlayers(stored, (player) =>
@@ -416,8 +448,9 @@ export function localMockRoomAction(params: {
   }
 
   if (params.action === "confirm_vote") {
+    if (!actor.role) throw new Error("이번 라운드 참여자만 투표할 수 있습니다.");
     const latestActor = stored.players.find((player) => player.id === actor.id) ?? actor;
-    const maxVotes = requiredVoteCount(stored.room.liarCount, connectedPlayers(stored.players).length);
+    const maxVotes = requiredVoteCount(stored.room.liarCount, connectedRoundPlayers(stored.players).length);
     if (parseVoteTargetIds(latestActor).length < maxVotes) throw new Error("먼저 투표할 플레이어를 선택하세요.");
     updatePlayers(stored, (player) =>
       player.id === actor.id ? { ...player, voteConfirmed: true, voteConfirmedAt: now() } : player,

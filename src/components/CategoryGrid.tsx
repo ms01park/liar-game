@@ -30,7 +30,7 @@ export function CategoryGrid({
           return (
             <button
               className={clsx(
-                "min-h-[54px] rounded-lg border px-2 py-2 text-center text-sm font-black leading-tight",
+                "min-h-[58px] rounded-lg border px-2 py-2 text-center text-[13px] font-black leading-tight sm:min-h-[54px] sm:text-sm",
                 active
                   ? "border-[var(--gold)] bg-[rgba(245,196,81,0.18)] text-white"
                   : "border-[var(--line)] bg-[#171a22] text-[var(--text)]",

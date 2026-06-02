@@ -118,12 +118,25 @@ function orderedConnectedPlayers(players: Player[]) {
     .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
-function connectedPlayers(players: Player[]) {
-  return activePlayers(players).filter((player) => player.connectionStatus === "connected");
+function joinedByPhaseStart(player: Player, phaseStartedAt?: string) {
+  if (!phaseStartedAt || !player.joinedAt) return true;
+  return new Date(player.joinedAt).getTime() <= new Date(phaseStartedAt).getTime();
+}
+
+function categoryVotePlayers(room: Awaited<ReturnType<typeof loadRoomBundle>>["room"], players: Player[]) {
+  return activePlayers(players).filter((player) => joinedByPhaseStart(player, room.phaseStartedAt));
+}
+
+function roundPlayers(players: Player[]) {
+  return activePlayers(players).filter((player) => Boolean(player.role));
+}
+
+function connectedRoundPlayers(players: Player[]) {
+  return roundPlayers(players).filter((player) => player.connectionStatus === "connected");
 }
 
 function nextConnectedSpeaker(players: Player[], currentSpeakerId?: string) {
-  const connected = orderedConnectedPlayers(players);
+  const connected = roundPlayers(orderedConnectedPlayers(players));
   if (!connected.length) return undefined;
   const current = players.find((player) => player.id === currentSpeakerId);
   if (!current) return connected.find((player) => !player.speakingDone);
@@ -236,12 +249,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
     }
 
     if (body.action === "category_vote") {
+      if (!categoryVotePlayers(room, players).some((player) => player.id === actor.id)) {
+        return NextResponse.json({ error: "이미 진행 중인 라운드에는 카테고리 투표할 수 없습니다." }, { status: 403 });
+      }
       await supabase.from("players").update({ category_vote: stringValue(body.payload?.category) }).eq("id", actor.id);
     }
 
     if (body.action === "finish_category_vote") {
       const categoryIds = wordPacks.map((pack) => pack.category);
-      const voters = activePlayers(players);
+      const voters = categoryVotePlayers(room, players);
       const { selected } = decideCategoryVote({ players: voters, categoryIds, randomId: "__random__" });
       const chosen = selected === "__random__" ? categoryIds[Math.floor(Math.random() * categoryIds.length)] : selected;
       const pack = wordPacks.find((item) => item.category === chosen) ?? wordPacks[0];
@@ -278,11 +294,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
 
     if (body.action === "finish_reveal") {
       const phase = stringValue(body.payload?.phase, "keyword_reveal") as RoomPhase;
-      const firstSpeakerId = phase === "speaking" ? orderedConnectedPlayers(players)[0]?.id : null;
+      const firstSpeakerId = phase === "speaking" ? roundPlayers(orderedConnectedPlayers(players))[0]?.id : null;
       await supabase.from("rooms").update({ phase, phase_started_at: now(), current_speaker_player_id: firstSpeakerId }).eq("id", room.id);
     }
 
     if (body.action === "finish_speaker" || body.action === "finish_speaking") {
+      const expectedSpeakerId = stringValue(body.payload?.speakerId);
+      const expectedPhaseStartedAt = stringValue(body.payload?.phaseStartedAt);
+      if (
+        room.phase !== "speaking" ||
+        (expectedSpeakerId && expectedSpeakerId !== room.currentSpeakerPlayerId) ||
+        (expectedPhaseStartedAt && expectedPhaseStartedAt !== room.phaseStartedAt)
+      ) {
+        const snapshot = await loadRoomBundle(supabase, code, { includeMessages: true });
+        return NextResponse.json({ room: snapshot.room, players: snapshot.players, messages: snapshot.messages });
+      }
       if (actor.id !== room.currentSpeakerPlayerId && !actor.isHost) {
         return NextResponse.json({ error: "현재 설명자만 완료할 수 있습니다." }, { status: 403 });
       }
@@ -307,6 +333,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
     }
 
     if (body.action === "time_adjust") {
+      if (!actor.role) return NextResponse.json({ error: "이번 라운드 참여자만 시간을 조정할 수 있습니다." }, { status: 403 });
       const delta = numberValue(body.payload?.deltaSeconds, 0);
       await supabase.from("time_adjustments").insert({ room_id: room.id, player_id: actor.id, delta_seconds: delta });
       await supabase.from("rooms").update({ talk_seconds: Math.max(15, room.talkSeconds + delta) }).eq("id", room.id);
@@ -314,10 +341,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
     }
 
     if (body.action === "vote") {
+      if (!actor.role) return NextResponse.json({ error: "이번 라운드 참여자만 투표할 수 있습니다." }, { status: 403 });
       if (actor.voteConfirmed) return NextResponse.json({ error: "이미 투표를 확정했습니다." }, { status: 400 });
       const targetIds = targetIdsValue(body.payload?.targetIds);
       const nextTargetIds = targetIds.length ? targetIds : [stringValue(body.payload?.targetId)].filter(Boolean);
-      const activeIds = new Set(connectedPlayers(players).map((player) => player.id));
+      const activeIds = new Set(connectedRoundPlayers(players).map((player) => player.id));
       const maxVotes = requiredVoteCount(room.liarCount, activeIds.size);
       const selectedIds = [...new Set(nextTargetIds)].filter((id) => activeIds.has(id)).slice(0, maxVotes);
       await supabase
@@ -327,21 +355,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
     }
 
     if (body.action === "confirm_vote") {
+      if (!actor.role) return NextResponse.json({ error: "이번 라운드 참여자만 투표할 수 있습니다." }, { status: 403 });
       const latestActorResult = await supabase.from("players").select("*").eq("id", actor.id).single();
       const latestActor = latestActorResult.data ? mapPlayer(latestActorResult.data) : actor;
-      const maxVotes = requiredVoteCount(room.liarCount, connectedPlayers(players).length);
+      const maxVotes = requiredVoteCount(room.liarCount, connectedRoundPlayers(players).length);
       if (parseVoteTargetIds(latestActor).length < maxVotes) return NextResponse.json({ error: "먼저 투표할 플레이어를 선택하세요." }, { status: 400 });
       await supabase.from("players").update({ vote_confirmed: true, vote_confirmed_at: now() }).eq("id", actor.id);
       const latestPlayers = (await supabase.from("players").select("*").eq("room_id", room.id)).data?.map(mapPlayer) ?? players;
-      if (connectedPlayers(latestPlayers).every((player) => player.id === actor.id || player.voteConfirmed)) {
+      if (connectedRoundPlayers(latestPlayers).every((player) => player.id === actor.id || player.voteConfirmed)) {
         await supabase.from("rooms").update({ phase: "result", phase_started_at: now() }).eq("id", room.id);
       }
     }
 
     if (body.action === "finish_discussion") {
       const latestPlayers = (await supabase.from("players").select("*").eq("room_id", room.id)).data?.map(mapPlayer) ?? players;
-      const voteTargetIds = latestPlayers.flatMap((player: Player) => parseVoteTargetIds(player));
-      decideWinner({ players: latestPlayers, voteTargetIds });
+      const round = roundPlayers(latestPlayers);
+      const voteTargetIds = round.flatMap((player: Player) => parseVoteTargetIds(player));
+      decideWinner({ players: round, voteTargetIds });
       await supabase.from("rooms").update({ phase: "result", phase_started_at: now() }).eq("id", room.id);
     }
 
