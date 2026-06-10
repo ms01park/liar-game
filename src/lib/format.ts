@@ -36,6 +36,7 @@ export function mapRoom(row: RoomRow): RoomState {
     revealSeconds: asNumber(row.reveal_seconds, 10),
     speakingSeconds: speakingSecondsFromStatus(row.status),
     talkSeconds: asNumber(row.talk_seconds, 180),
+    currentTalkSeconds: typeof row.current_talk_seconds === "number" ? asNumber(row.current_talk_seconds) : undefined,
     selectedCategory: asString(row.selected_category) || undefined,
     citizenWord: asString(row.citizen_word) || undefined,
     liarWord: asString(row.liar_word) || undefined,
@@ -62,7 +63,6 @@ export function mapPlayer(row: PlayerRow): Player {
     usedTimeAdjust: asBoolean(row.used_time_adjust),
     speakingDone: asBoolean(row.speaking_done),
     lastSeenAt: asString(row.last_seen_at) || undefined,
-    joinedAt: asString(row.joined_at) || undefined,
     connectionStatus: (asString(row.connection_status) || undefined) as Player["connectionStatus"],
   };
 }

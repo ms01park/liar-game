@@ -50,6 +50,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
       .single();
     if (playerResult.error) throw playerResult.error;
 
+    if (roomResult.data.phase === "lobby") {
+      await supabase.from("messages").insert({
+        room_id: roomResult.data.id,
+        player_id: null,
+        phase: "lobby",
+        body: `${nickname}님이 들어왔습니다.`,
+      });
+    }
+
     return NextResponse.json({
       room: mapRoom(roomResult.data),
       player: mapPlayer(playerResult.data),

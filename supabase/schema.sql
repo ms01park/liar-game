@@ -23,6 +23,7 @@ create table if not exists public.rooms (
   spy_count int not null default 0,
   reveal_seconds int not null default 10,
   talk_seconds int not null default 180,
+  current_talk_seconds int,
   selected_category text,
   citizen_word text,
   liar_word text,
@@ -42,6 +43,7 @@ alter table public.rooms add column if not exists liar_count int not null defaul
 alter table public.rooms add column if not exists spy_count int not null default 0;
 alter table public.rooms add column if not exists reveal_seconds int not null default 10;
 alter table public.rooms add column if not exists talk_seconds int not null default 180;
+alter table public.rooms add column if not exists current_talk_seconds int;
 alter table public.rooms add column if not exists selected_category text;
 alter table public.rooms add column if not exists citizen_word text;
 alter table public.rooms add column if not exists liar_word text;

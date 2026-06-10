@@ -35,7 +35,6 @@ export type Player = {
   usedTimeAdjust?: boolean;
   speakingDone?: boolean;
   lastSeenAt?: string;
-  joinedAt?: string;
   connectionStatus?: "connected" | "disconnected" | "left";
 };
 
@@ -52,6 +51,7 @@ export type RoomState = {
   revealSeconds: number;
   speakingSeconds: number;
   talkSeconds: number;
+  currentTalkSeconds?: number;
   selectedCategory?: string;
   citizenWord?: string;
   liarWord?: string;
